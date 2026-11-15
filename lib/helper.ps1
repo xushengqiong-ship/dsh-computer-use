@@ -94,6 +94,8 @@ public class W32in {
   public const uint MOUSEEVENTF_LEFTUP = 0x0004;
   public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
   public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+  public const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
+  public const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
   public const uint MOUSEEVENTF_WHEEL = 0x0800;
   public const uint KEYEVENTF_KEYUP = 0x0002;
   public const uint KEYEVENTF_UNICODE = 0x0004;
@@ -329,6 +331,33 @@ function Invoke-Input {
       [W32in]::MouseButton([W32in]::MOUSEEVENTF_LEFTUP)
       return @{ ok = $true; method = 'sendinput'; action = 'click'; x = $X; y = $Y; state = 'sent-unverified' }
     }
+    'double-click' {
+      [void][W32in]::SetCursorPos($X, $Y)
+      Start-Sleep -Milliseconds 30
+      for ($i = 0; $i -lt 2; $i++) {
+        [W32in]::MouseButton([W32in]::MOUSEEVENTF_LEFTDOWN)
+        Start-Sleep -Milliseconds 20
+        [W32in]::MouseButton([W32in]::MOUSEEVENTF_LEFTUP)
+        if ($i -eq 0) { Start-Sleep -Milliseconds 80 }
+      }
+      return @{ ok = $true; method = 'sendinput'; action = 'double-click'; x = $X; y = $Y; state = 'sent-unverified' }
+    }
+    'right-click' {
+      [void][W32in]::SetCursorPos($X, $Y)
+      Start-Sleep -Milliseconds 30
+      [W32in]::MouseButton([W32in]::MOUSEEVENTF_RIGHTDOWN)
+      Start-Sleep -Milliseconds 30
+      [W32in]::MouseButton([W32in]::MOUSEEVENTF_RIGHTUP)
+      return @{ ok = $true; method = 'sendinput'; action = 'right-click'; x = $X; y = $Y; state = 'sent-unverified' }
+    }
+    'middle-click' {
+      [void][W32in]::SetCursorPos($X, $Y)
+      Start-Sleep -Milliseconds 30
+      [W32in]::MouseButton([W32in]::MOUSEEVENTF_MIDDLEDOWN)
+      Start-Sleep -Milliseconds 30
+      [W32in]::MouseButton([W32in]::MOUSEEVENTF_MIDDLEUP)
+      return @{ ok = $true; method = 'sendinput'; action = 'middle-click'; x = $X; y = $Y; state = 'sent-unverified' }
+    }
     'drag' {
       [void][W32in]::SetCursorPos($X, $Y)
       Start-Sleep -Milliseconds 60
@@ -441,6 +470,20 @@ function Invoke-Action {
         try { [void]$e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $hasValue = $true } catch {}
         try { [void]$e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern); $hasInvoke = $true } catch {}
         try { [void]$e.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern); $hasText = $true } catch {}
+        # Read the actual text, not just the capability flag: knowing whether a
+        # control CAN expose text is useless when what we need is its content.
+        # Bounded: this costs one call per candidate and can be slow.
+        $textValue = $null
+        if ($hasText -and $i -lt 80) {
+          try {
+            $tp = [System.Windows.Automation.TextPattern]$e.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+            $raw = $tp.DocumentRange.GetText(500)
+            if ($null -ne $raw) {
+              $raw = $raw.Trim()
+              if ($raw -ne '') { $textValue = $raw }
+            }
+          } catch { $textValue = $null }
+        }
         $elems += @{
           index = $i
           type = $ct
@@ -453,6 +496,7 @@ function Invoke-Action {
           value = $hasValue
           invoke = $hasInvoke
           text = $hasText
+          textValue = $textValue
         }
         $i++
       }
