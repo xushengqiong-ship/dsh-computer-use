@@ -1,0 +1,4 @@
+# dsh-computer-use-win bundle patch
+- insert:
+    - id: dsh-computer-use-win
+      name: dsh-computer-use-win
