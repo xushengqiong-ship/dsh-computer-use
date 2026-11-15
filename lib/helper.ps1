@@ -90,6 +90,17 @@ function Decode($b64) {
 
 # window still captures correctly. PW_RENDERFULLCONTENT (2) is what Chromium
 # apps need; CopyFromScreen is the fallback.
+# UWP/WinUI elements can report an infinite BoundingRectangle; [int] on that
+# throws and kills the whole observation. Clamp to a usable int instead.
+function SafeInt($v) {
+  if ($null -eq $v) { return 0 }
+  try { $d = [double]$v } catch { return 0 }
+  if ([double]::IsNaN($d) -or [double]::IsInfinity($d)) { return 0 }
+  if ($d -gt 2147483647) { return 2147483647 }
+  if ($d -lt -2147483648) { return -2147483648 }
+  return [int]$d
+}
+
 function New-WindowInfo($w, $fg) {
   $c = $w.Current
   $hwnd = [IntPtr]$c.NativeWindowHandle
