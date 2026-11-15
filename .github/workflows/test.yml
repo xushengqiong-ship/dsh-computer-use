@@ -1,0 +1,40 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    name: syntax (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+        node: [22, 24]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Node syntax
+        run: |
+          node --check lib/run.mjs
+          node --check lib/index.mjs
+
+      # GitHub runners have no interactive desktop session, so a real UIA
+      # enumeration cannot be asserted here. Parse the helper instead.
+      - name: Helper syntax
+        run: |
+          $code = Get-Content -Raw 'lib/helper.ps1'
+          [void][scriptblock]::Create($code)
+          Write-Host 'helper.ps1 parsed OK'
+
+      - name: Plugin loads
+        run: |
+          node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-platform.mjs
