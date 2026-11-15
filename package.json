@@ -1,43 +1,45 @@
 {
-  "name": "dsh-computer-use",
-  "version": "1.4.0",
-  "description": "Cross-platform Computer Use for DeepSeek Harness: inspect UI trees, click elements, write text without stealing focus, and screenshot occluded windows. Windows (full), macOS (System Events), Linux (window manager).",
-  "type": "module",
-  "pnpm": {
-    "onlyBuiltDependencies": ["koffi"]
-  },
-  "main": "lib/index.mjs",
-  "files": [
-    "lib/",
-    "cordis.patch.yml",
-    "README.md",
-    "README.zh-CN.md",
-    "LICENSE"
-  ],
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
-  },
-  "peerDependencies": {
-    "@deepseek-ai/dsh-tools": "*"
-  },
-  "keywords": [
-    "dsh-plugin",
-    "deepseek-harness",
-    "computer-use",
-    "ui-automation",
-    "windows",
-    "macos",
-    "linux",
-    "automation"
-  ],
-  "engines": {
-    "node": ">=22"
-  },
-  "license": "MIT",
-  "dependencies": {
-    "koffi": "^3.3.8",
-    "pngjs": "^7.0.0"
-  }
+    "name":  "dsh-computer-use",
+    "version":  "1.5.0",
+    "description":  "Cross-platform Computer Use for DeepSeek Harness: inspect UI trees, click elements, write text without stealing focus, and screenshot occluded windows. Windows (full), macOS (System Events), Linux (window manager).",
+    "type":  "module",
+    "pnpm":  {
+                 "onlyBuiltDependencies":  [
+                                               "koffi"
+                                           ]
+             },
+    "main":  "lib/index.mjs",
+    "files":  [
+                  "lib/",
+                  "cordis.patch.yml",
+                  "README.md",
+                  "README.zh-CN.md",
+                  "LICENSE"
+              ],
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "./cordis.patch.yml"
+                           }
+            },
+    "peerDependencies":  {
+                             "@deepseek-ai/dsh-tools":  "*"
+                         },
+    "keywords":  [
+                     "dsh-plugin",
+                     "deepseek-harness",
+                     "computer-use",
+                     "ui-automation",
+                     "windows",
+                     "macos",
+                     "linux",
+                     "automation"
+                 ],
+    "engines":  {
+                    "node":  "\u003e=22"
+                },
+    "license":  "MIT",
+    "dependencies":  {
+                         "koffi":  "^3.3.8",
+                         "pngjs":  "^7.0.0"
+                     }
 }
