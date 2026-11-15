@@ -15,13 +15,14 @@
 | 平台 | 列窗口 | 元素树 | 点击元素 | 写文本 | 截图 |
 | --- | --- | --- | --- | --- | --- |
 | **Windows 10 / 11**（家庭版 / 专业版 / 企业版 / 教育版） | ✅ | ✅ 完整 UIA | ✅ 不抢焦点 | ✅ 不抢焦点 | ✅ 遮挡安全 |
-| **macOS 14+** | ✅ | ⚠️ 仅窗口下一层 | ✅ System Events | ✅ 键盘输入 | ⚠️ 仅整屏 |
-| **Linux · X11** | ✅ wmctrl | ❌ 未实现 | ⚠️ 仅坐标 | ✅ xdotool（需焦点） | ✅ |
-| **Linux · Wayland** | ✅ wmctrl | ❌ | ❌ xdotool 够不到原生窗口 | ❌ | ✅ grim |
+| **macOS 14+** | ✅ | ⚠️ 仅窗口下一层 | ❌ **只读** | ❌ | ⚠️ 仅整屏 |
+| **Linux（X11 / Wayland）** | ✅ wmctrl | ❌ | ❌ **只读** | ❌ | ✅ 整屏 |
 
-图例：✅ 可用 · ⚠️ 部分可用/有前提 · ❌ 不支持
+**只有 Windows 在真机上验证过。** macOS 和 Linux 的 provider 是按各自官方 API 写的，但这里没法实测——请当作尽力而为。
 
-**只有 Windows 在真机上验证过。** macOS 和 Linux 的 provider 是按各自官方 API 写的，但这里没法实测——请当作尽力而为，坏了欢迎提 issue。
+### 为什么 macOS / Linux 是只读的（0.4.0）
+
+`osascript` 的 `keystroke` / `click at`，以及 `xdotool` 的合成输入，是**全局的或不可靠的**：它们作用在当时有焦点的窗口上，或者被 GTK/Qt/Wayland 目标静默忽略。把它们当作 `computer_act` 暴露出去，意味着「往我指定的应用里打字」可能打到别的程序上——而且不报错。既然没有原生按窗口的后端就做不安全，这两个平台现在只做观测，所有写操作返回 `unsupported` 并说明原因。
 
 ### Linux 为什么弱
 
@@ -125,10 +126,31 @@ node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mj
 - Linux：尝试 AT-SPI2 桥接，至少支持 GTK 应用
 - 敏感操作的一次性确认令牌
 
+## 0.4.0 修了什么
+
+| 编号 | 问题 | 修法 |
+| --- | --- | --- |
+| A01 | 常驻失败后**重放**写动作 | 写动作返回 `state: 'unknown'`，永不重试 |
+| A02 | 回退路径读的是 `req.title`，而线上字段是 `titleB64` | 一份业务请求、两处编码；回退读原始参数 |
+| A03 | 死进程的迟到事件会结算新请求 | 每个请求绑定到自己的进程实例 |
+| A05 | `click` 落到 `unknown action` | 显式映射 `click → clickxy` |
+| A08 | 写入回退到顶层窗口句柄（会改窗口标题） | 元素没有自己的 HWND 就直接拒绝 |
+| A09 | `set-text` 把请求文本当成结果返回 | 回读校验，返回 `verified / applied-unverified` |
+| A10 | 目标找不到时静默截整屏 | 直接失败；截图带 `scope: window / screen` |
+| A11 | 点击用客户端坐标，截图用窗口坐标 | 用 `ClientToScreen` 算偏移，返回 `offset` |
+| A12/A13 | macOS/Linux 的输入是全局的 | 两个 provider 改为只读，写操作返回 `unsupported` |
+| A14 | 能力报告含糊 | `computer_status` 按平台列出具体能力 |
+
+## 仍然待办
+
+- Observation ID（A07）：UIA 的 `RuntimeId` 在很多控件上是空的（记事本编辑区实测为空），所以身份要由 AutomationId + ControlType + 名称 + 树路径组合——方案有了但未实现
+- UIA 遍历的边界（B01）和更完整的模型可见输出（B02）
+- Windows 的 `type-text`（真实键盘输入）是刻意没做的
+
 ## 许可
 
 MIT。
 
 ---
 
-> 状态：`0.2.0`。Windows 已验证；macOS / Linux 为尽力实现，未在真机测试。
+> 状态：`0.4.0`。Windows 已验证；macOS / Linux 只读，未在真机测试。
