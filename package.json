@@ -1,0 +1,22 @@
+{
+  "name": "dsh-computer-use-win",
+  "version": "0.1.0",
+  "description": "Windows-native Computer Use for DeepSeek Harness: inspect UI Automation trees, click elements, write text without stealing focus, and screenshot occluded windows.",
+  "type": "module",
+  "main": "lib/index.mjs",
+  "files": ["lib/", "cordis.patch.yml", "README.md", "README.zh-CN.md", "LICENSE"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "keywords": ["dsh-plugin", "deepseek-harness", "computer-use", "ui-automation", "windows", "automation"],
+  "engines": {
+    "node": ">=22"
+  },
+  "os": ["win32"],
+  "license": "MIT"
+}
