@@ -22,6 +22,7 @@ exist but are read-only and untested.
 | `computer_clipboard` | Read or write the text clipboard |
 | `computer_watch` | Wait for a window to open/close, or for a key to be pressed |
 | `computer_scan` | Scroll a long page and capture it screen by screen |
+| `computer_stop` | Release any mouse button or modifier key this session still holds — an interrupted drag otherwise leaves the desktop holding a button, turning the user's own clicks into drags |
 
 ### Two input channels
 
@@ -104,6 +105,14 @@ hard way — a tool whose `render` returns an **image content block** makes the 
 through one `clean()` wrapper, and declares no nested object parameters.
 
 Screenshots return a path; read the image with a separate tool.
+
+### inspect returns a capped, prioritised element list
+
+A Chromium window can expose 350+ elements; returning the whole tree costs
+thousands of tokens per call. `computer_inspect` therefore returns at most 60
+elements — operable ones first — and reports `total`, `shown` and `truncated` so
+the model knows the list is incomplete. Pass `max` explicitly for a different
+ceiling.
 
 ### Other constraints
 
