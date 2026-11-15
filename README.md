@@ -159,6 +159,24 @@ node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-platfor
 node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mjs   # touches the real desktop
 ```
 
+## New in 0.8.0 — native capture and input (no antivirus friction)
+
+Screenshot and input used to live in the PowerShell helper. Windows Defender
+classifies "a PowerShell script that captures window bitmaps" as
+`HackTool:PowerShell/EmpireGetScreenshot.C` and blocks the entire script through
+AMSI — which disabled every capability at once.
+
+Both now run in Node.js through `koffi` FFI against `user32.dll` / `gdi32.dll`:
+
+| | PowerShell helper | Native (koffi) |
+| --- | --- | --- |
+| Window capture | ~900 ms | **185 ms** |
+| AMSI script scan | ❌ blocked | ✅ not applicable |
+| Needs an AV exclusion | yes | **no** |
+
+The helper now contains UI Automation only. Verified: a copy of `helper.ps1`
+placed outside any exclusion path runs clean (`Defender` no longer flags it).
+
 ## New in 0.5.0 — foreground input channel
 
 Mirrors the input surface Codex's computer use exposes:
