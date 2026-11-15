@@ -1,235 +1,173 @@
 # dsh-computer-use
 
-[![test](https://github.com/xushengqiong-ship/dsh-computer-use/actions/workflows/test.yml/badge.svg)](https://github.com/xushengqiong-ship/dsh-computer-use/actions/workflows/test.yml)
+Computer Use for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): let an agent inspect a
+desktop UI, click its controls, and type into it — **without stealing focus** most of the time, and with a
+real-input channel for the cases where window messages are not enough.
 
-English | [简体中文](README.zh-CN.md)
+Status: `1.4.0`. **Windows 10/11 is the only platform verified on real hardware.** macOS and Linux providers
+exist but are read-only and untested.
 
-**Cross-platform Computer Use for DeepSeek Harness.** One tool vocabulary, three
-platform providers: read a real application's UI tree, click its controls, write
-text without stealing focus, and screenshot it even when occluded.
+---
 
-Inspired by [dsh-computer-use](https://github.com/Anionex/dsh-computer-use) (macOS only).
-Independent implementation, no shared code.
+## What it can do
 
-## Platform support — read this first
+| Tool | Purpose |
+| --- | --- |
+| `computer_status` | Report platform readiness and a capability matrix |
+| `computer_list_windows` | List visible top-level windows (pid, title, size, class, foreground/minimized) |
+| `computer_inspect` | Read the element tree: type, name, bounds, can-invoke, can-set-value, text content |
+| `computer_act` | **Background channel** — `invoke` · `set-text` · `scroll-to` · `scroll-page` · `activate` · `click` · `drag` |
+| `computer_input` | **Foreground channel** — `move` · `hover` · `click` · `double-click` · `right-click` · `middle-click` · `drag` · `scroll` · `press` · `type` · `wait` |
+| `computer_screenshot` | Capture a window or the screen to PNG |
+| `computer_clipboard` | Read or write the text clipboard |
+| `computer_watch` | Wait for a window to open/close, or for a key to be pressed |
+| `computer_scan` | Scroll a long page and capture it screen by screen |
 
-Capability genuinely differs per platform. This table is what the code actually
-does, not an aspiration:
+### Two input channels
+
+| | `computer_act` (background) | `computer_input` (foreground) |
+| --- | --- | --- |
+| Mechanism | UI Automation patterns + window messages | Real `mouse_event` / `keybd_event` injection |
+| Moves your cursor | No | **Yes** |
+| Needs the target focused | No | Yes, for keyboard/typing |
+| Reaches canvas / games | No | **Yes** |
+| Works while you use the PC | Yes | No — it takes over input |
+
+Use the background channel when you want work done inside a window while you keep working. Use the foreground
+channel when the target only understands real mouse and keyboard — at the cost of your cursor.
+
+---
+
+## Platform support
 
 | Platform | List windows | Element tree | Click element | Write text | Screenshot |
 | --- | --- | --- | --- | --- | --- |
 | **Windows 10 / 11** (Home / Pro / Enterprise / Education) | ✅ | ✅ full UIA | ✅ no focus steal | ✅ no focus steal | ✅ occluded-safe |
-| **macOS 14+** | ✅ | ⚠️ one level below each window | ❌ **read-only** | ❌ | ⚠️ full screen only |
-| **Linux (X11 / Wayland)** | ✅ wmctrl | ❌ | ❌ **read-only** | ❌ | ✅ screen |
+| **macOS 14+** | ✅ | ⚠️ one level below each window | ❌ read-only | ❌ | ⚠️ full screen only |
+| **Linux (X11 / Wayland)** | ✅ wmctrl | ❌ | ❌ read-only | ❌ | ✅ screen |
 
-Legend: ✅ works · ⚠️ partial / caveated · ❌ unsupported
+**Windows is the only platform verified on real hardware.** The macOS and Linux providers are written against
+their documented APIs but could not be tested here.
 
-**Windows is the only platform verified on a real machine.** macOS and Linux
-providers are written against their documented APIs but could not be tested
-here; treat them as best-effort and report what breaks.
-
-### Why macOS and Linux are read-only (0.4.0)
-
-`osascript`'s `keystroke` / `click at` and `xdotool`'s synthetic input are
-**global or unreliable**: they act on whatever window currently has focus, or are
-silently ignored by GTK/Qt/Wayland targets. Exposing them as `computer_act`
-meant "type this into the app I named" could instead type into a different
-application — and succeed without any error. Since that cannot be made safe
-without a native per-window backend, those platforms now support observation
-only and every mutation returns `unsupported` with an explanation.
-
-### Why Linux is weaker
-
-Linux has no cross-toolkit accessibility API comparable to UIA or AX. AT-SPI2
-exists, but it needs a `pyatspi` bridge and behaves differently per desktop and
-per toolkit (GTK vs Qt vs Electron). Rather than ship something that silently
-fails, the Linux provider does what it can — window lists, screenshots, xdotool
-input — and returns an explicit "unsupported" for element inspection.
-
-## Tools
-
-| Tool | Purpose |
-| --- | --- |
-| `computer_status` | Report platform, readiness and which capabilities are available |
-| `computer_list_windows` | List visible top-level windows (pid, title, size, plus class/foreground on Windows) |
-| `computer_inspect` | Read the element tree (type, name, bounds, can-invoke, can-set-value), optional screenshot |
-| `computer_act` | **Background channel**: `invoke` · `set-text` · `scroll-to` · `activate` · `click` · `drag` — targets a window, never moves the cursor |
-| `computer_input` | **Foreground channel**: `move` · `hover` · `click` · `double-click` · `right-click` · `middle-click` · `drag` · `scroll` · `press` · `type` · `wait` — real SendInput events |
-| `computer_screenshot` | Capture window or screen to PNG; pair with `read_image` to actually see it |
-
-### Two input channels, two trade-offs
-
-| | `computer_act` (background) | `computer_input` (foreground) |
-| --- | --- | --- |
-| Mechanism | UIA patterns + window messages | `SendInput` — real pointer/keyboard events |
-| Moves your cursor | ❌ no | ✅ **yes** |
-| Needs target focused | ❌ no | ✅ yes for keyboard/typing |
-| Reaches canvas / games | ❌ no | ✅ **yes** |
-| Works while you use the PC | ✅ yes | ❌ it takes over the input |
-
-Use the background channel when you want work done in a window while you keep
-working. Use the foreground channel when the target only understands real
-mouse/keyboard — at the cost of your cursor.
-
-## How each platform works
-
-| Platform | Mechanism |
-| --- | --- |
-| Windows | `UIAutomationClient` (.NET Framework) through **Windows PowerShell 5.1**, kept alive as a **persistent `serve` process**; `InvokePattern` for clicks; `WM_SETTEXT` fallback for legacy controls; `PrintWindow(PW_RENDERFULLCONTENT)` for occluded capture; `WM_LBUTTONDOWN/MOUSEMOVE/UP` for drag |
-| macOS | `osascript` → System Events (`click button`, `keystroke`, `click at`); `screencapture` |
-| Linux | `wmctrl` for windows, `xdotool` for input, `grim` / ImageMagick / `gnome-screenshot` for capture; no element tree |
-
-### Why the helper stays resident
-
-Spawning Windows PowerShell costs about **1 second** (process start + .NET assembly
-load). Measured on this machine with 5 consecutive window lists:
-
-| Mode | Per call |
-| --- | --- |
-| One-shot spawn | 999 ms |
-| Persistent `serve` process | **27 ms** |
-
-That is a **37×** difference, so the Windows provider keeps one helper alive and
-exchanges one JSON line per request. Requests are serialised (PowerShell is
-single-threaded), a stuck helper is killed on timeout, and any failure falls back
-to a one-shot spawn.
-
-`computer_inspect` with `screenshot: true` now captures **in the same round trip**
-as the tree read, instead of two separate calls.
-
-Every Windows call re-enumerates the live tree, so an index is never replayed
-against a window that changed. `expectName` adds a hard guard: the element name
-must match exactly or the action is refused.
-
-## Verified on Windows 10 (19045) + DSH 0.2.2-rc.3
-
-| Check | Result |
-| --- | --- |
-| Enumerate windows | 12 visible top-level windows |
-| Read DSH's own Electron UI | **502–783 UIA elements** depending on view state |
-| Persistent helper speed | 27 ms/call vs 999 ms one-shot (**37×**) |
-| Combined tree + screenshot | 3526 elements and a PNG in one round trip |
-| Click a control | `InvokePattern` toggled the sidebar and toggled it back |
-| Write CJK text | Chinese written into Notepad via `WM_SETTEXT`, UTF-8 intact |
-| Screenshot occluded window | Notepad fully covered, captured correctly via `PrintWindow` |
-| Drag | Message-based drag reports success, but see the limitation below |
-
-## Known limitations
-
-- **Canvas content is invisible to UIA.** A board drawn on a canvas is one opaque rectangle — there are no controls to click. Screenshot it, or have the app expose state as text.
-- **Chromium/Electron apps** expose web content to UIA only when accessibility is enabled. DSH itself does (783 elements measured); for apps that don't, use `computer_screenshot` + `read_image`.
-- **Drag is message-based and not universally effective.** It sends `WM_LBUTTONDOWN` / `WM_MOUSEMOVE` / `WM_LBUTTONUP` to the target window, so no focus is stolen — but controls that rely on real mouse capture (Notepad's edit area, many canvas widgets) report success without actually selecting anything. Verified: dragging across text in Notepad produced no selection. Prefer `set-text` / `invoke`; treat drag as best-effort.
-- **Minimized windows** have no usable geometry; restore them first.
-- **No global input injection.** This plugin never moves the system cursor or sends global keystrokes; everything is targeted at a specific window.
-
-## Install
-
-```powershell
-# Windows
-dsh plugin --profile <profile> add file:C:\path\to\dsh-computer-use
-```
-
-```bash
-# macOS / Linux — same command shape
-dsh plugin --profile <profile> add file:/path/to/dsh-computer-use
-```
-
-Then restart DSH so the bundle and tools load.
-
-### Prerequisites
-
-| Platform | Needs |
-| --- | --- |
-| Windows | Windows PowerShell 5.1 (present on every Windows 10/11). Override with `DSH_WIN_CU_POWERSHELL` |
-| macOS | Accessibility permission for the app running DSH (System Settings → Privacy & Security → Accessibility) |
-| Linux | `wmctrl`, `xdotool`, and a screenshot tool (`grim` on Wayland, else ImageMagick or `gnome-screenshot`) |
-
-## Safety
-
-- No tool deletes files, kills processes, shuts down, or sends input outside the selected window.
-- `computer_act` accepts `expectName`; when supplied it must match exactly — use it for anything irreversible.
-- Read-only actions (`computer_status`, `computer_list_windows`, `computer_inspect`) never modify a window.
-- Screenshots can contain anything on screen; treat them as sensitive.
-
-## Testing
-
-```powershell
-node --check lib/index.mjs
-node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-platform.mjs
-node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mjs   # touches the real desktop
-```
-
-## Scrolling: which path works where
-
-A bundled AV product (Lenovo Windows Security Center / Huorong) blocks simulated
-**vertical wheel** input, while window messages and keyboard injection keep
-working. `computer_scan` therefore uses a ladder instead of one mechanism:
-
-| Target | Vertical | Horizontal |
-| --- | --- | --- |
-| Win32 (Notepad, Explorer, Office) | `WM_VSCROLL` message ✅ | `WM_HSCROLL` |
-| Chromium / Electron (Codex, Chrome) | click to focus + `PageUp`/`PageDown` ✅ | **Shift + wheel ✅** |
-
-Measured on a 20-column table page: Shift+wheel moved the view from `COL-01` to
-`COL-11`. Ordinary wheel events did nothing in the same Chromium view, so the
-block is not "injection is dead" but "Chromium ignores synthesised vertical
-wheel scrolling".
-
-## New in 0.8.0 — native capture and input (no antivirus friction)
-
-Screenshot and input used to live in the PowerShell helper. Windows Defender
-classifies "a PowerShell script that captures window bitmaps" as
-`HackTool:PowerShell/EmpireGetScreenshot.C` and blocks the entire script through
-AMSI — which disabled every capability at once.
-
-Both now run in Node.js through `koffi` FFI against `user32.dll` / `gdi32.dll`:
-
-| | PowerShell helper | Native (koffi) |
-| --- | --- | --- |
-| Window capture | ~900 ms | **185 ms** |
-| AMSI script scan | ❌ blocked | ✅ not applicable |
-| Needs an AV exclusion | yes | **no** |
-
-The helper now contains UI Automation only. Verified: a copy of `helper.ps1`
-placed outside any exclusion path runs clean (`Defender` no longer flags it).
-
-## New in 0.5.0 — foreground input channel
-
-Mirrors the input surface Codex's computer use exposes:
-
-- `move` / `click` / `drag` / `scroll` / `press` (supports `ctrl+s` combos) / `type` (CJK included)
-- Real `SendInput`, so it **reaches canvas, games and any UI**
-- Cost: it moves the system cursor; typing needs the target in the foreground
-
-Verified on Windows 10: cursor move ✅ (962,533 → 400,300, restored afterwards) and typing ✅ (wrote `SendInput typing works 123` into Notepad).
-
-## Fixed in 0.4.0
-
-| ID | Problem | Fix |
-| --- | --- | --- |
-| A01 | A failed persistent call replayed mutating actions | Mutating actions now return `state: 'unknown'` and are never retried |
-| A02 | Fallback path read wire fields (`req.title`) that only exist as `titleB64` | One business request, two encoders; fallback reads the original options |
-| A03 | Late events from a dead helper could settle a newer request | Every request is bound to its process instance |
-| A05 | `click` fell through to `unknown action` | Explicit `click → clickxy` mapping |
-| A08 | Write fell back to the top-level window handle (retitled windows) | Refuses unless the element has its own HWND |
-| A09 | `set-text` reported the request text as if verified | Reads back and returns `state: verified / applied-unverified` |
-| A10 | Missing target silently captured the whole screen | Fails instead; screenshots report `scope: window / screen` |
-| A11 | Clicks used client coordinates while screenshots use window coordinates | Offset computed via `ClientToScreen`, returned as `offset` |
-| A12/A13 | macOS/Linux input was global, not target-bound | Both providers are read-only; mutations return `unsupported` |
-| A14 | Capability reporting was vague | `computer_status` lists concrete capabilities per provider |
-
-## Still open
-
-- Observation IDs (A07): UIA `RuntimeId` is empty for many controls (verified on
-  Notepad's edit area), so identity must be AutomationId + ControlType + name +
-  tree path — designed but not implemented.
-- Bounded UIA traversal (B01) and richer model-visible output (B02).
-- `type-text` on Windows (real keyboard input) is deliberately absent.
-
-## License
-
-MIT.
+Both are read-only on purpose: `osascript`'s `keystroke` and `xdotool`'s synthetic input are global or
+unreliable — they act on whichever window has focus, or are silently ignored by GTK/Qt/Wayland targets.
+Exposing them as `computer_act` would mean "type this into the app I named" could type into a different
+application, and succeed without any error.
 
 ---
 
-> Status: `0.5.0`. Windows verified including foreground input; macOS/Linux read-only and untested.
+## Install
+
+```bash
+dsh plugin --profile <your-profile> add <path-or-package>
+```
+
+It is a normal DSH bundle: `package.json` carries `dsh.bundle.patch`, and `cordis.patch.yml` inserts the plugin
+row. Dependencies `koffi` and `pngjs` are prebuilt — no compiler toolchain needed.
+
+### Hot reload while developing
+
+You do **not** need to restart the whole harness after editing plugin code:
+
+```
+plugin_manager set_plugin <entryId> enabled=false   → applied
+plugin_manager set_plugin <entryId> enabled=true    → applied   (code reloaded)
+```
+
+A new session picks up the new tool surface; an existing session keeps its old tool table.
+
+---
+
+## Known limitations
+
+### Antivirus and input injection
+
+Some security products block **simulated vertical wheel input** specifically. On a machine with a bundled
+Huorong/Lenovo component (`usysdiag` + `HRWSCCtrl`), `mouse_event` and `SendInput` wheel events reached no
+application at all — including a plain Notepad — while `WM_VSCROLL` and keyboard injection kept working.
+
+`computer_scan` therefore uses a ladder rather than one mechanism:
+
+| Target | Vertical | Horizontal |
+| --- | --- | --- |
+| Win32 (Notepad, Explorer, Office) | `WM_VSCROLL` message | `WM_HSCROLL` |
+| Chromium / Electron (Codex, Chrome) | click to focus, then `PageUp` / `PageDown` | Shift + wheel |
+
+If injection is blocked entirely on your machine, the background channel still works; only `computer_input` is
+affected.
+
+### Tool results must be plain text
+
+DSH rejects tool results that contain a single `undefined` (`value is not lossless JSON`), and — verified the
+hard way — a tool whose `render` returns an **image content block** makes the whole model request fail with
+`DeepSeek Messages transport failed`. Every tool here therefore returns plain text only, passes its result
+through one `clean()` wrapper, and declares no nested object parameters.
+
+Screenshots return a path; read the image with a separate tool.
+
+### Other constraints
+
+- **Canvas content is invisible to UIA.** A board drawn on a canvas is one opaque rectangle. Screenshot it.
+- **Chromium/Electron apps** expose web content to UIA only when accessibility is on. DSH itself does;
+  for apps that don't, use a screenshot.
+- **Qt apps** (WeChat, for example) may expose almost nothing — a single TitleBar. Only the
+  screenshot + coordinate path works there.
+- **Drag is message-based and not universally effective.** Controls that rely on real mouse capture
+  (Notepad's edit area, many canvas widgets) report success without selecting anything.
+- **Minimized windows** have no usable geometry; restore them first.
+- **No global input injection.** `computer_act` never moves the system cursor or sends global keystrokes.
+
+---
+
+## How it works
+
+```
+lib/index.mjs          tool definitions (plain text results, no nesting)
+lib/providers/win.mjs  Windows provider: UIA via helper, capture/input via native
+lib/providers/mac.mjs  macOS provider (read-only, osascript)
+lib/providers/linux.mjs Linux provider (read-only, wmctrl)
+lib/native/win32.mjs   koffi FFI: PrintWindow capture, mouse_event/keybd_event, clipboard
+lib/helper.ps1         Windows PowerShell 5.1 helper: UI Automation only
+lib/helper-client.mjs  persistent helper client (one JSON line per request)
+```
+
+**Why capture and input are native, not PowerShell:** a PowerShell script that captures window bitmaps is
+classified by Windows Defender as `HackTool:PowerShell/EmpireGetScreenshot.C`, and AMSI then blocks the entire
+script — every capability dies at once. Moving capture and injection into Node (via `koffi`, prebuilt) removes
+that failure mode: verified by running the helper from a path with no AV exclusion.
+
+Capture also got faster on the way: about **185 ms per shot** versus ~900 ms for the PowerShell version.
+
+**Why the helper stays resident:** spawning Windows PowerShell costs roughly one second. One `serve` process
+answering JSON lines brings a UIA round trip down to ~27 ms — a **37×** difference. Requests are serialised,
+a stuck helper is killed on timeout, and any failure falls back to a one-shot spawn.
+
+**DPI:** Node starts DPI-unaware, so on a 200% display `GetWindowRect` reports half the real size and
+`PrintWindow` renders only the top-left quadrant. Capture raises the thread DPI context to
+`PER_MONITOR_AWARE_V2` and restores it afterwards; input stays in the logical coordinate space that
+`SetCursorPos` expects.
+
+---
+
+## Verified on Windows 10 (19045) with DSH 0.2.2-rc.3
+
+| Check | Result |
+| --- | --- |
+| Enumerate windows | 11 visible top-level windows |
+| Read DSH's own Electron UI | **637 UIA elements** |
+| Read a WinUI app | 59 elements for Calculator; `7+8=15` driven through the background channel |
+| Type with real keyboard events | 283 ASCII characters landed in Notepad, cursor moved to line 30 |
+| Scroll a long page | `computer_scan` captured 3 screens; the last frame showed lines that were previously out of view |
+| Persistence | 27 ms/call versus 999 ms one-shot (**37×**) |
+| Capture speed | 185 ms per shot (native PrintWindow) |
+| Clipboard round trip | CJK text written then read back exactly |
+| End to end | Read a long conversation in Codex, located its input box, typed 246 characters including CJK, sent it |
+
+CI runs on `windows-latest` with Node 22 and 24: syntax checks, `helper.ps1` parse, and a platform-agnostic
+load test. The GitHub runner has no interactive desktop, so real UI automation is not exercised there.
+
+---
+
+## License
+
+MIT
