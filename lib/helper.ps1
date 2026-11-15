@@ -199,6 +199,17 @@ function Capture-Window($t, $outPath) {
   return @{ path = $outPath; width = $w; height = $h; mode = $mode }
 }
 
+# UWP/WinUI elements can report an infinite BoundingRectangle; [int] on that
+# throws and kills the whole observation. Clamp to a usable int instead.
+function SafeInt($v) {
+  if ($null -eq $v) { return 0 }
+  try { $d = [double]$v } catch { return 0 }
+  if ([double]::IsNaN($d) -or [double]::IsInfinity($d)) { return 0 }
+  if ($d -gt 2147483647) { return 2147483647 }
+  if ($d -lt -2147483648) { return -2147483648 }
+  return [int]$d
+}
+
 function New-WindowInfo($w, $fg) {
   $c = $w.Current
   $hwnd = [IntPtr]$c.NativeWindowHandle
@@ -411,7 +422,7 @@ function Invoke-Action {
           hwnd = $c.NativeWindowHandle
           enabled = $c.IsEnabled
           offscreen = $c.IsOffscreen
-          rect = @{ x = [int]$r.X; y = [int]$r.Y; w = [int]$r.Width; h = [int]$r.Height }
+          rect = @{ x = (SafeInt $r.X); y = (SafeInt $r.Y); w = (SafeInt $r.Width); h = (SafeInt $r.Height) }
           value = $hasValue
           invoke = $hasInvoke
           text = $hasText
