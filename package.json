@@ -1,6 +1,6 @@
 {
   "name": "dsh-computer-use",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Cross-platform Computer Use for DeepSeek Harness: inspect UI trees, click elements, write text without stealing focus, and screenshot occluded windows. Windows (full), macOS (System Events), Linux (window manager).",
   "type": "module",
   "main": "lib/index.mjs",
