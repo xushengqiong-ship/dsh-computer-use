@@ -34,16 +34,29 @@ Linux 没有能对标 UIA / AX 的跨工具包无障碍 API。AT-SPI2 存在，�
 | `computer_status` | 报告平台、就绪状态、具备哪些能力 |
 | `computer_list_windows` | 列出可见顶层窗口（pid、标题、尺寸；Windows 上还有类名、前台/最小化） |
 | `computer_inspect` | 读元素树（类型、名称、坐标、可点击、可写入），可同时截图 |
-| `computer_act` | `invoke` 点击 · `set-text` 写入 · `click` 坐标兜底 |
+| `computer_act` | `invoke` 点击 · `set-text` 写入 · `click` 坐标兜底 · `drag` 拖拽（Windows） |
 | `computer_screenshot` | 截窗口或整屏为 PNG；配合 `read_image` 就能真的看见 |
 
 ## 各平台怎么实现的
 
 | 平台 | 机制 |
 | --- | --- |
-| Windows | 用 **Windows PowerShell 5.1** 调 `UIAutomationClient`（.NET Framework）；点击用 `InvokePattern`；旧控件写入回退 `WM_SETTEXT`；遮挡截图用 `PrintWindow(PW_RENDERFULLCONTENT)` |
+| Windows | 用 **Windows PowerShell 5.1** 调 `UIAutomationClient`（.NET Framework），并**常驻一个 `serve` 进程**；点击用 `InvokePattern`；旧控件写入回退 `WM_SETTEXT`；遮挡截图用 `PrintWindow(PW_RENDERFULLCONTENT)`；拖拽用 `WM_LBUTTONDOWN/MOUSEMOVE/UP` |
 | macOS | `osascript` 驱动 System Events（`click button`、`keystroke`、`click at`）；截图用 `screencapture` |
 | Linux | `wmctrl` 列窗口、`xdotool` 做输入、`grim` / ImageMagick / `gnome-screenshot` 截图；无元素树 |
+
+### 为什么要常驻
+
+启动一次 Windows PowerShell 大约要 **1 秒**（进程启动 + .NET 程序集加载）。本机连续跑 5 次窗口列表实测：
+
+| 模式 | 每次耗时 |
+| --- | --- |
+| 一次性 spawn | 999 ms |
+| 常驻 `serve` 进程 | **27 ms** |
+
+差 **37 倍**，所以 Windows provider 会保持一个 helper 活着，每次请求交换一行 JSON。请求串行执行（PowerShell 单线程），卡住会超时并杀掉重启，任何失败都回退到一次性 spawn。
+
+`computer_inspect` 带 `screenshot: true` 时，**元素树和截图在同一次往返里完成**，不再是两次调用。
 
 Windows 每次调用都重新枚举实时树，所以元素序号不会被重放到已经变化的窗口上。`expectName` 是硬校验：名字不完全匹配就拒绝执行。
 
@@ -53,9 +66,20 @@ Windows 每次调用都重新枚举实时树，所以元素序号不会被重放
 | --- | --- |
 | 枚举窗口 | 12 个可见顶层窗口 |
 | 读 DSH 自己的 Electron 界面 | **502–783 个 UIA 元素**（随视图状态变化） |
+| 常驻加速 | 27 ms/次 vs 一次性 999 ms/次（**37×**） |
+| 树 + 截图一次返回 | 3526 个元素 + 一张 PNG，一次往返 |
 | 点击控件 | `InvokePattern` 收起侧边栏并恢复 |
 | 写中文 | 经 `WM_SETTEXT` 写入记事本，UTF-8 完好 |
 | 截被遮挡窗口 | 记事本被完全盖住，`PrintWindow` 仍截准 |
+| 拖拽 | 消息式拖拽报告成功，但见下方限制 |
+
+## 已知限制
+
+- **canvas 内容对 UIA 不可见。** 画在 canvas 上的棋盘只是一个不透明矩形，没有控件可点。要么截图，要么让程序把状态导出成文本。
+- **Chromium/Electron 应用**只有在开启 accessibility 时才把网页内容暴露给 UIA。DSH 自己是暴露的（实测 783 个元素）；不暴露的应用请用 `computer_screenshot` + `read_image`。
+- **拖拽是基于消息的，并非万能。** 它给目标窗口发 `WM_LBUTTONDOWN` / `WM_MOUSEMOVE` / `WM_LBUTTONUP`，所以不抢焦点——但依赖真实鼠标捕获的控件（记事本的编辑区、很多 canvas 控件）会「报告成功但其实没选中」。实测：在记事本里横向拖过文字，没有产生选区。优先用 `set-text` / `invoke`，拖拽当作尽力而为。
+- **最小化窗口**没有可用几何信息，先恢复再操作。
+- **不做全局输入注入。** 不移动系统光标、不发全局按键，一切都定向到具体窗口。
 
 ## 安装
 
