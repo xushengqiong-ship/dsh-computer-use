@@ -1,6 +1,6 @@
 # dsh-computer-use-win
 
-[![test](https://github.com/OWNER/REPO/actions/workflows/test.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/test.yml)
+[![test](https://github.com/xushengqiong-ship/dsh-computer-use-win/actions/workflows/test.yml/badge.svg)](https://github.com/xushengqiong-ship/dsh-computer-use-win/actions/workflows/test.yml)
 
 [English](README.md) | 简体中文
 
