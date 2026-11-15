@@ -53,8 +53,8 @@ input — and returns an explicit "unsupported" for element inspection.
 | `computer_status` | Report platform, readiness and which capabilities are available |
 | `computer_list_windows` | List visible top-level windows (pid, title, size, plus class/foreground on Windows) |
 | `computer_inspect` | Read the element tree (type, name, bounds, can-invoke, can-set-value), optional screenshot |
-| `computer_act` | **Background channel**: `invoke` · `set-text` · `click` · `drag` — targets a window, never moves the cursor |
-| `computer_input` | **Foreground channel**: `move` · `click` · `drag` · `scroll` · `press` · `type` — real SendInput events |
+| `computer_act` | **Background channel**: `invoke` · `set-text` · `scroll-to` · `activate` · `click` · `drag` — targets a window, never moves the cursor |
+| `computer_input` | **Foreground channel**: `move` · `hover` · `click` · `double-click` · `right-click` · `middle-click` · `drag` · `scroll` · `press` · `type` · `wait` — real SendInput events |
 | `computer_screenshot` | Capture window or screen to PNG; pair with `read_image` to actually see it |
 
 ### Two input channels, two trade-offs
