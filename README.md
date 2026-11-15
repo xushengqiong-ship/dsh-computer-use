@@ -159,6 +159,22 @@ node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-platfor
 node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mjs   # touches the real desktop
 ```
 
+## Scrolling: which path works where
+
+A bundled AV product (Lenovo Windows Security Center / Huorong) blocks simulated
+**vertical wheel** input, while window messages and keyboard injection keep
+working. `computer_scan` therefore uses a ladder instead of one mechanism:
+
+| Target | Vertical | Horizontal |
+| --- | --- | --- |
+| Win32 (Notepad, Explorer, Office) | `WM_VSCROLL` message ✅ | `WM_HSCROLL` |
+| Chromium / Electron (Codex, Chrome) | click to focus + `PageUp`/`PageDown` ✅ | **Shift + wheel ✅** |
+
+Measured on a 20-column table page: Shift+wheel moved the view from `COL-01` to
+`COL-11`. Ordinary wheel events did nothing in the same Chromium view, so the
+block is not "injection is dead" but "Chromium ignores synthesised vertical
+wheel scrolling".
+
 ## New in 0.8.0 — native capture and input (no antivirus friction)
 
 Screenshot and input used to live in the PowerShell helper. Windows Defender
