@@ -24,6 +24,7 @@ param(
   [int]$Y2 = 0,
   [int]$Max = 120,
   [string]$Out = '',
+  [string]$Hwnd = '',
   [switch]$WithShot
 )
 
@@ -41,10 +42,14 @@ using System.Text;
 using System.Runtime.InteropServices;
 public class W32cu {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+  [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr hWnd, ref POINT p);
   [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="SendMessage")]
   public static extern IntPtr SendMessageStr(IntPtr hWnd, uint Msg, IntPtr wParam, string lParam);
   [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="SendMessage")]
   public static extern IntPtr SendMessageInt(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, EntryPoint="SendMessage")]
+  public static extern IntPtr SendMessageSB(IntPtr hWnd, uint Msg, IntPtr wParam, StringBuilder lParam);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
@@ -56,7 +61,7 @@ public class W32cu {
 "@
 
 $WM_SETTEXT = 0x000C
-$WM_GETTEMPLATE = 0
+$WM_GETTEXT = 0x000D
 $WM_GETTEXTLENGTH = 0x000E
 $WM_LBUTTONDOWN = 0x0201
 $WM_MOUSEMOVE = 0x0200
@@ -114,33 +119,71 @@ function Capture-Window($t, $outPath) {
   return @{ path = $outPath; width = $w; height = $h; mode = $mode }
 }
 
+function New-WindowInfo($w, $fg) {
+  $c = $w.Current
+  $hwnd = [IntPtr]$c.NativeWindowHandle
+  $rect = New-Object W32cu+RECT
+  [void][W32cu]::GetWindowRect($hwnd, [ref]$rect)
+  return [pscustomobject]@{
+    element = $w
+    pid = $c.ProcessId
+    name = $c.Name
+    cls = $c.ClassName
+    hwnd = $hwnd.ToInt64()
+    foreground = ($hwnd -eq $fg)
+    minimized = [W32cu]::IsIconic($hwnd)
+    rect = @{ left = $rect.Left; top = $rect.Top; width = ($rect.Right - $rect.Left); height = ($rect.Bottom - $rect.Top) }
+  }
+}
+
 function Get-TargetWindow {
   $root = [System.Windows.Automation.AutomationElement]::RootElement
   $cond = [System.Windows.Automation.Condition]::TrueCondition
   $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
   $fg = [W32cu]::GetForegroundWindow()
 
+  # 1) An explicit handle is the only unambiguous identity.
+  if ($Hwnd -ne '') {
+    $want = [IntPtr]::Zero
+    try { $want = [IntPtr][long]$Hwnd } catch { throw "invalid hwnd: $Hwnd" }
+    foreach ($w in $wins) {
+      $h = [IntPtr]$w.Current.NativeWindowHandle
+      if ($h -eq $want) { return (New-WindowInfo $w $fg) }
+    }
+    throw "window handle $Hwnd is not a visible top-level window"
+  }
+
+  # 2) No selector at all: the caller decides (list / full-screen capture).
+  if ($TargetPid -le 0 -and $Title -eq '') { return $null }
+
+  # 3) pid/title filter. Several matches are ambiguous: report them instead of
+  #    silently acting on the first one (A06).
+  $matches = @()
   foreach ($w in $wins) {
     $c = $w.Current
     if ($TargetPid -gt 0 -and $c.ProcessId -ne $TargetPid) { continue }
     if ($Title -ne '' -and $c.Name -notlike "*$Title*") { continue }
-    if ($TargetPid -le 0 -and $Title -eq '') { continue }
-
-    $hwnd = [IntPtr]$c.NativeWindowHandle
-    $rect = New-Object W32cu+RECT
-    [void][W32cu]::GetWindowRect($hwnd, [ref]$rect)
-    return [pscustomobject]@{
-      element = $w
-      pid = $c.ProcessId
-      name = $c.Name
-      cls = $c.ClassName
-      hwnd = $hwnd.ToInt64()
-      foreground = ($hwnd -eq $fg)
-      minimized = [W32cu]::IsIconic($hwnd)
-      rect = @{ left = $rect.Left; top = $rect.Top; width = ($rect.Right - $rect.Left); height = ($rect.Bottom - $rect.Top) }
-    }
+    $matches += (New-WindowInfo $w $fg)
   }
-  return $null
+
+  if ($matches.Count -eq 0) { return $null }
+  if ($matches.Count -gt 1) {
+    $desc = ($matches | ForEach-Object { "$($_.hwnd)|pid=$($_.pid)|$($_.name)" }) -join ' ;; '
+    throw "ambiguous target: $($matches.Count) windows matched. Pass hwnd explicitly: $desc"
+  }
+  return $matches[0]
+}
+
+# Offset from the window's top-left (what screenshots are relative to) to the
+# client area's top-left (what WM_LBUTTONDOWN coordinates are relative to).
+function Get-ClientOffset($t) {
+  if (-not $t) { return @{ dx = 0; dy = 0 } }
+  $rect = New-Object W32cu+RECT
+  [void][W32cu]::GetWindowRect([IntPtr]$t.hwnd, [ref]$rect)
+  $pt = New-Object W32cu+POINT
+  $pt.X = 0; $pt.Y = 0
+  [void][W32cu]::ClientToScreen([IntPtr]$t.hwnd, [ref]$pt)
+  return @{ dx = ($pt.X - $rect.Left); dy = ($pt.Y - $rect.Top) }
 }
 
 function Get-ElementAt {
@@ -235,22 +278,65 @@ function Invoke-Action {
       if (-not $t) { throw 'target window not found' }
       $e = Get-ElementAt $t $Index
       $method = ''
+      $targetHwnd = [IntPtr]::Zero
+
+      # 1) ValuePattern replaces the control's value; it never simulates typing.
+      $vp = $null
       try {
         $vp = [System.Windows.Automation.ValuePattern]$e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-        $vp.SetValue($Text)
-        $method = 'uia-value'
-      } catch {
-        $h = [IntPtr]$e.Current.NativeWindowHandle
-        if ($h -eq [IntPtr]::Zero) { $h = [IntPtr]$t.hwnd }
-        [void][W32cu]::SendMessageStr($h, $WM_SETTEXT, [IntPtr]::Zero, $Text)
+      } catch { $vp = $null }
+
+      if ($null -ne $vp) {
+        # A pattern that EXISTS but fails must not silently fall back to messages.
+        try {
+          $vp.SetValue($Text)
+          $method = 'uia-value'
+        } catch {
+          throw ("ValuePattern.SetValue failed: " + $_.Exception.Message)
+        }
+      } else {
+        # Legacy control: only write through its OWN native handle. Falling back
+        # to the top-level window handle would retitle the window instead (A08).
+        $targetHwnd = [IntPtr]$e.Current.NativeWindowHandle
+        if ($targetHwnd -eq [IntPtr]::Zero) {
+          throw 'element exposes neither ValuePattern nor a native HWND; refusing to write (a top-level WM_SETTEXT would hit the window title)'
+        }
+        $ret = [W32cu]::SendMessageStr($targetHwnd, $WM_SETTEXT, [IntPtr]::Zero, $Text)
+        if ($ret -eq [IntPtr]::Zero) { throw 'WM_SETTEXT returned 0: the control rejected the text' }
         $method = 'wm-settext'
       }
+
+      # 2) Read back. "the call returned" is not "the value is there" (A09).
+      # Keep the handle captured BEFORE the write: a UIA element can go stale
+      # once the control's content changes, and re-reading NativeWindowHandle
+      # then yields 0 (which made the verification read an empty buffer).
+      $actual = $null
+      $verified = $false
+      try {
+        if ($null -ne $vp) {
+          $actual = $vp.Current.Value
+        } elseif ($targetHwnd -ne [IntPtr]::Zero) {
+          # Cast to Int32: StringBuilder(Int64) resolves to the string overload,
+          # which would seed the buffer with the number instead of the text.
+          $len = [int]([W32cu]::SendMessageInt($targetHwnd, $WM_GETTEXTLENGTH, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64())
+          if ($len -ge 0 -and $len -lt 1000000) {
+            $sb = New-Object System.Text.StringBuilder ([int]($len + 1))
+            [void][W32cu]::SendMessageSB($targetHwnd, $WM_GETTEXT, [IntPtr]($len + 1), $sb)
+            $actual = $sb.ToString()
+          }
+        }
+        if ($null -ne $actual) { $verified = ($actual -eq $Text) }
+      } catch { $actual = $null }
+
       return @{
         ok = $true
         method = $method
+        state = $(if ($verified) { 'verified' } else { 'applied-unverified' })
+        verified = $verified
         index = $Index
         element = @{ type = $e.Current.ControlType.ProgrammaticName; name = $e.Current.Name; class = $e.Current.ClassName }
-        written = $Text
+        requested = $Text
+        actual = $actual
       }
     }
 
@@ -261,7 +347,7 @@ function Invoke-Action {
       try {
         $ip = [System.Windows.Automation.InvokePattern]$e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
         $ip.Invoke()
-        return @{ ok = $true; method = 'uia-invoke'; index = $Index; name = $e.Current.Name }
+        return @{ ok = $true; method = 'uia-invoke'; state = 'invoked-unverified'; index = $Index; name = $e.Current.Name }
       } catch {
         throw ("invoke not supported: " + $_.Exception.Message)
       }
@@ -271,46 +357,76 @@ function Invoke-Action {
       $t = Get-TargetWindow
       if (-not $t) { throw 'target window not found' }
       $hwnd = [IntPtr]$t.hwnd
-      $lp = [IntPtr](($Y -shl 16) -bor ($X -band 0xFFFF))
+      # Input coordinates are window-relative (the same space as screenshots);
+      # WM_LBUTTONDOWN coordinates are client-relative. Convert (A11).
+      $off = Get-ClientOffset $t
+      $cx = $X - $off.dx
+      $cy = $Y - $off.dy
+      $lp = [IntPtr](($cy -shl 16) -bor ($cx -band 0xFFFF))
       [void][W32cu]::SendMessageInt($hwnd, $WM_LBUTTONDOWN, [IntPtr]$MK_LBUTTON, $lp)
       Start-Sleep -Milliseconds 40
       [void][W32cu]::SendMessageInt($hwnd, $WM_LBUTTONUP, [IntPtr]::Zero, $lp)
-      return @{ ok = $true; method = 'wm-click'; x = $X; y = $Y; window = $t.name }
+      return @{
+        ok = $true
+        method = 'wm-click'
+        state = 'sent-unverified'
+        x = $X
+        y = $Y
+        clientX = $cx
+        clientY = $cy
+        offset = $off
+        window = $t.name
+      }
     }
 
     'drag' {
       $t = Get-TargetWindow
       if (-not $t) { throw 'target window not found' }
       $hwnd = [IntPtr]$t.hwnd
+      $off = Get-ClientOffset $t
+      $sx = $X - $off.dx
+      $sy = $Y - $off.dy
+      $ex = $X2 - $off.dx
+      $ey = $Y2 - $off.dy
       $steps = 14
-      $lp = [IntPtr](($Y -shl 16) -bor ($X -band 0xFFFF))
+      $lp = [IntPtr](($sy -shl 16) -bor ($sx -band 0xFFFF))
       [void][W32cu]::SendMessageInt($hwnd, $WM_LBUTTONDOWN, [IntPtr]$MK_LBUTTON, $lp)
       Start-Sleep -Milliseconds 60
       for ($i = 1; $i -le $steps; $i++) {
-        $cx = [int]($X + ($X2 - $X) * $i / $steps)
-        $cy = [int]($Y + ($Y2 - $Y) * $i / $steps)
+        $cx = [int]($sx + ($ex - $sx) * $i / $steps)
+        $cy = [int]($sy + ($ey - $sy) * $i / $steps)
         $mv = [IntPtr](($cy -shl 16) -bor ($cx -band 0xFFFF))
         [void][W32cu]::SendMessageInt($hwnd, $WM_MOUSEMOVE, [IntPtr]$MK_LBUTTON, $mv)
         Start-Sleep -Milliseconds 18
       }
-      $end = [IntPtr](($Y2 -shl 16) -bor ($X2 -band 0xFFFF))
+      $end = [IntPtr](($ey -shl 16) -bor ($ex -band 0xFFFF))
       [void][W32cu]::SendMessageInt($hwnd, $WM_LBUTTONUP, [IntPtr]::Zero, $end)
       return @{
         ok = $true
         method = 'wm-drag'
+        state = 'sent-unverified'
         from = @{ x = $X; y = $Y }
         to = @{ x = $X2; y = $Y2 }
+        offset = $off
         steps = $steps
         window = $t.name
+        note = 'message-based drag needs no focus, but controls relying on real mouse capture may ignore it'
       }
     }
 
     'screenshot' {
       if ($Out -eq '') { throw 'need -Out path' }
       $t = Get-TargetWindow
+      # A selector was given but nothing matched: fail instead of silently
+      # capturing the whole screen, which would be read as the target (A10).
+      if (-not $t -and ($TargetPid -gt 0 -or $Title -ne '' -or $Hwnd -ne '')) {
+        throw 'target window not found; refusing to capture the whole screen instead'
+      }
       $shot = Capture-Window $t $Out
       $shot.ok = $true
+      $shot.scope = $(if ($t) { 'window' } else { 'screen' })
       $shot.window = $(if ($t) { $t.name } else { '(full screen)' })
+      $shot.windowId = $(if ($t) { $t.hwnd } else { 0 })
       return $shot
     }
 
