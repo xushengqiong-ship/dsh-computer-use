@@ -35,8 +35,8 @@ Linux 没有能对标 UIA / AX 的跨工具包无障碍 API。AT-SPI2 存在，�
 | `computer_status` | 报告平台、就绪状态、具备哪些能力 |
 | `computer_list_windows` | 列出可见顶层窗口（pid、标题、尺寸；Windows 上还有类名、前台/最小化） |
 | `computer_inspect` | 读元素树（类型、名称、坐标、可点击、可写入），可同时截图 |
-| `computer_act` | **后台通道**：`invoke` · `set-text` · `click` · `drag` —— 定向到窗口，不动光标 |
-| `computer_input` | **前台通道**：`move` · `click` · `drag` · `scroll` · `press` · `type` —— 真实 SendInput 事件 |
+| `computer_act` | **后台通道**：`invoke` · `set-text` · `scroll-to` · `activate` · `click` · `drag` —— 定向到窗口，不动光标 |
+| `computer_input` | **前台通道**：`move` · `hover` · `click` · `double-click` · `right-click` · `middle-click` · `drag` · `scroll` · `press` · `type` · `wait` —— 真实 SendInput 事件 |
 | `computer_screenshot` | 截窗口或整屏为 PNG；配合 `read_image` 就能真的看见 |
 
 ### 两条输入通道，两种取舍
