@@ -20,6 +20,7 @@
 | `computer_clipboard` | 读写纯文本剪贴板 |
 | `computer_watch` | 等窗口打开/关闭，或等你按下某个键 |
 | `computer_scan` | 滚动长页面并逐屏截图 |
+| `computer_stop` | 释放本会话可能还按着的鼠标键和修饰键——拖拽中途失败时，桌面上会残留一个按下的键，用户自己的点击就变成了拖拽 |
 
 ### 两条输入通道
 
@@ -98,6 +99,12 @@ DSH 会拒绝含单个 `undefined` 的结果（`value is not lossless JSON`）�
 所以这里所有工具只返回纯文本，结果统一过一个 `clean()` 包装，也不声明任何嵌套 object 参数。
 
 截图返回路径，要看图请另调工具。
+
+### inspect 只返回上限内、按可操作性排序的元素
+
+一个 Chromium 窗口能暴露 350 个以上元素，全量返回一次就要吃掉几千 token。所以
+`computer_inspect` 最多返回 60 个——可操作的排在前面——并通过 `total` / `shown` /
+`truncated` 告诉模型这份清单不完整。需要更多时显式传 `max`。
 
 ### 其它约束
 
