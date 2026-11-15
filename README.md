@@ -53,8 +53,23 @@ input — and returns an explicit "unsupported" for element inspection.
 | `computer_status` | Report platform, readiness and which capabilities are available |
 | `computer_list_windows` | List visible top-level windows (pid, title, size, plus class/foreground on Windows) |
 | `computer_inspect` | Read the element tree (type, name, bounds, can-invoke, can-set-value), optional screenshot |
-| `computer_act` | `invoke` click · `set-text` write · `click` coordinate fallback · `drag` (Windows) |
+| `computer_act` | **Background channel**: `invoke` · `set-text` · `click` · `drag` — targets a window, never moves the cursor |
+| `computer_input` | **Foreground channel**: `move` · `click` · `drag` · `scroll` · `press` · `type` — real SendInput events |
 | `computer_screenshot` | Capture window or screen to PNG; pair with `read_image` to actually see it |
+
+### Two input channels, two trade-offs
+
+| | `computer_act` (background) | `computer_input` (foreground) |
+| --- | --- | --- |
+| Mechanism | UIA patterns + window messages | `SendInput` — real pointer/keyboard events |
+| Moves your cursor | ❌ no | ✅ **yes** |
+| Needs target focused | ❌ no | ✅ yes for keyboard/typing |
+| Reaches canvas / games | ❌ no | ✅ **yes** |
+| Works while you use the PC | ✅ yes | ❌ it takes over the input |
+
+Use the background channel when you want work done in a window while you keep
+working. Use the foreground channel when the target only understands real
+mouse/keyboard — at the cost of your cursor.
 
 ## How each platform works
 
@@ -144,6 +159,16 @@ node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-platfor
 node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mjs   # touches the real desktop
 ```
 
+## New in 0.5.0 — foreground input channel
+
+Mirrors the input surface Codex's computer use exposes:
+
+- `move` / `click` / `drag` / `scroll` / `press` (supports `ctrl+s` combos) / `type` (CJK included)
+- Real `SendInput`, so it **reaches canvas, games and any UI**
+- Cost: it moves the system cursor; typing needs the target in the foreground
+
+Verified on Windows 10: cursor move ✅ (962,533 → 400,300, restored afterwards) and typing ✅ (wrote `SendInput typing works 123` into Notepad).
+
 ## Fixed in 0.4.0
 
 | ID | Problem | Fix |
@@ -173,4 +198,4 @@ MIT.
 
 ---
 
-> Status: `0.4.0`. Windows verified; macOS/Linux read-only and untested on real hardware.
+> Status: `0.5.0`. Windows verified including foreground input; macOS/Linux read-only and untested.
