@@ -210,6 +210,33 @@ function SafeInt($v) {
   return [int]$d
 }
 
+# Hardware-accelerated surfaces can make PrintWindow return an all-black bitmap.
+# Sampling a few points lets us warn instead of handing back a silent lie.
+function Test-BlackImage($path) {
+  try {
+    Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+    $bmp = [System.Drawing.Bitmap]::FromFile($path)
+    $w = $bmp.Width
+    $h = $bmp.Height
+    if ($w -lt 8 -or $h -lt 8) { $bmp.Dispose(); return $false }
+    $dark = 0
+    $n = 0
+    for ($i = 1; $i -le 24; $i++) {
+      $x = [int]($w * ((($i - 1) % 6) + 0.5) / 6)
+      $y = [int]($h * ([math]::Floor(($i - 1) / 6) + 0.5) / 4)
+      if ($x -ge $w) { $x = $w - 1 }
+      if ($y -ge $h) { $y = $h - 1 }
+      $c = $bmp.GetPixel($x, $y)
+      if ($c.R -lt 10 -and $c.G -lt 10 -and $c.B -lt 10) { $dark++ }
+      $n++
+    }
+    $bmp.Dispose()
+    return ($n -gt 0 -and $dark -eq $n)
+  } catch {
+    return $false
+  }
+}
+
 function New-WindowInfo($w, $fg) {
   $c = $w.Current
   $hwnd = [IntPtr]$c.NativeWindowHandle
@@ -599,10 +626,20 @@ function Invoke-Action {
         throw 'target window not found; refusing to capture the whole screen instead'
       }
       $shot = Capture-Window $t $Out
+      # A minimized window has no usable geometry: capturing it yields a tiny
+      # meaningless bitmap that looks like a real result. Refuse instead.
+      if ($t -and $t.minimized) {
+        Remove-Item -LiteralPath $Out -Force -ErrorAction SilentlyContinue
+        throw "target window is minimized; restore it first (its client area has no size while minimized)"
+      }
       $shot.ok = $true
       $shot.scope = $(if ($t) { 'window' } else { 'screen' })
       $shot.window = $(if ($t) { $t.name } else { '(full screen)' })
       $shot.windowId = $(if ($t) { $t.hwnd } else { 0 })
+      if (Test-BlackImage $Out) {
+        $shot.allBlack = $true
+        $shot.warning = 'bitmap is entirely black: the window may use a hardware-accelerated surface that PrintWindow cannot read. Try the foreground channel or capture the screen instead.'
+      }
       return $shot
     }
 
