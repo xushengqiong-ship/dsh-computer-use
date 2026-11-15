@@ -1,6 +1,13 @@
-# Windows UI Automation helper for dsh-computer-use-win.
+# Windows UI Automation helper for dsh-computer-use.
 # ASCII only on purpose: Windows PowerShell 5.1 reads .ps1 as ANSI, so any
 # non-ASCII literal here would corrupt the parser.
+#
+# Two modes:
+#   single  : -Action <name> ...   -> run once, print one JSON line, exit
+#   serve   : -Action serve        -> read JSON request lines from stdin,
+#                                     answer with one JSON line each. Keeps the
+#                                     -Process alive so UIA calls stop paying
+#                                     process-startup cost (~300ms per call).
 param(
   [string]$Action = 'list',
   [string]$Title = '',
@@ -13,8 +20,11 @@ param(
   [string]$Text = '',
   [int]$X = 0,
   [int]$Y = 0,
+  [int]$X2 = 0,
+  [int]$Y2 = 0,
   [int]$Max = 120,
-  [string]$Out = ''
+  [string]$Out = '',
+  [switch]$WithShot
 )
 
 $ErrorActionPreference = 'Stop'
@@ -46,30 +56,64 @@ public class W32cu {
 "@
 
 $WM_SETTEXT = 0x000C
-$WM_GETTEXT = 0x000D
+$WM_GETTEMPLATE = 0
 $WM_GETTEXTLENGTH = 0x000E
-
-# Non-ASCII arguments arrive base64-encoded: passing them through the Windows
-# command line depends on the console code page and mangles CJK text.
-function Decode($b64) {
-  if ($b64 -eq '') { return '' }
-  return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
-}
-if ($TextB64 -ne '') { $Text = Decode $TextB64 }
-if ($TitleB64 -ne '') { $Title = Decode $TitleB64 }
-if ($ExpectNameB64 -ne '') { $ExpectName = Decode $ExpectNameB64 }
+$WM_LBUTTONDOWN = 0x0201
+$WM_MOUSEMOVE = 0x0200
+$WM_LBUTTONUP = 0x0202
+$MK_LBUTTON = 0x0001
 
 function Emit($obj) {
   $obj | ConvertTo-Json -Depth 8 -Compress
   exit 0
 }
 
-function Fail($msg) {
-  @{ ok = $false; error = $msg } | ConvertTo-Json -Compress
-  exit 1
+# Non-ASCII arguments arrive base64-encoded: passing them through the Windows
+# command line depends on the console code page and mangles CJK text.
+function Decode($b64) {
+  if ([string]::IsNullOrEmpty($b64)) { return '' }
+  return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
 }
 
-# --- locate the target top-level window ---
+# Shared capture path: PrintWindow renders the window itself, so an occluded
+# window still captures correctly. PW_RENDERFULLCONTENT (2) is what Chromium
+# apps need; CopyFromScreen is the fallback.
+function Capture-Window($t, $outPath) {
+  if ([string]::IsNullOrEmpty($outPath)) { throw 'capture needs an output path' }
+  $left = 0; $top = 0; $w = 0; $h = 0
+  if ($t) {
+    $rect = New-Object W32cu+RECT
+    [void][W32cu]::GetWindowRect([IntPtr]$t.hwnd, [ref]$rect)
+    $left = $rect.Left; $top = $rect.Top
+    $w = $rect.Right - $rect.Left; $h = $rect.Bottom - $rect.Top
+  } else {
+    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $w = $b.Width; $h = $b.Height
+  }
+  if ($w -le 0 -or $h -le 0) { throw 'window has no area (minimized?)' }
+
+  $bmp = New-Object System.Drawing.Bitmap $w, $h
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $mode = 'screen-copy'
+  if ($t) {
+    try {
+      $hdc = $g.GetHdc()
+      $ok = [W32cu]::PrintWindow([IntPtr]$t.hwnd, $hdc, 2)
+      $g.ReleaseHdc($hdc)
+      if ($ok) { $mode = 'print-window' }
+    } catch {
+      try { $g.ReleaseHdc($hdc) } catch {}
+    }
+  }
+  if ($mode -eq 'screen-copy') {
+    $g.CopyFromScreen($left, $top, 0, 0, (New-Object System.Drawing.Size $w, $h))
+  }
+  $g.Dispose()
+  $bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
+  $bmp.Dispose()
+  return @{ path = $outPath; width = $w; height = $h; mode = $mode }
+}
+
 function Get-TargetWindow {
   $root = [System.Windows.Automation.AutomationElement]::RootElement
   $cond = [System.Windows.Automation.Condition]::TrueCondition
@@ -99,196 +143,233 @@ function Get-TargetWindow {
   return $null
 }
 
-# --- enumerate windows ---
-if ($Action -eq 'list') {
-  $root = [System.Windows.Automation.AutomationElement]::RootElement
-  $cond = [System.Windows.Automation.Condition]::TrueCondition
-  $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
-  $fg = [W32cu]::GetForegroundWindow()
-  $list = @()
-  foreach ($w in $wins) {
-    $c = $w.Current
-    $hwnd = [IntPtr]$c.NativeWindowHandle
-    if (-not [W32cu]::IsWindowVisible($hwnd)) { continue }
-    $rect = New-Object W32cu+RECT
-    [void][W32cu]::GetWindowRect($hwnd, [ref]$rect)
-    $list += @{
-      pid = $c.ProcessId
-      title = $c.Name
-      class = $c.ClassName
-      hwnd = $hwnd.ToInt64()
-      foreground = ($hwnd -eq $fg)
-      minimized = [W32cu]::IsIconic($hwnd)
-      width = ($rect.Right - $rect.Left)
-      height = ($rect.Bottom - $rect.Top)
-    }
-  }
-  Emit @{ ok = $true; count = $list.Count; windows = $list }
-}
-
-# --- observe: bounded UIA tree of the target window ---
-if ($Action -eq 'observe') {
-  $t = Get-TargetWindow
-  if (-not $t) { Fail 'target window not found' }
-
+function Get-ElementAt {
+  param($t, $idx)
   $cond = [System.Windows.Automation.Condition]::TrueCondition
   $all = $t.element.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
-  $elems = @()
-  $i = 0
-  foreach ($e in $all) {
-    if ($i -ge $Max) { break }
-    $c = $e.Current
-    $ct = ''
-    try { $ct = $c.ControlType.ProgrammaticName -replace 'ControlType\.', '' } catch {}
-    $r = $c.BoundingRectangle
-    $hasValue = $false; $hasInvoke = $false; $hasText = $false
-    try { [void]$e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $hasValue = $true } catch {}
-    try { [void]$e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern); $hasInvoke = $true } catch {}
-    try { [void]$e.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern); $hasText = $true } catch {}
-    $elems += @{
-      index = $i
-      type = $ct
-      class = $c.ClassName
-      name = $c.Name
-      hwnd = $c.NativeWindowHandle
-      enabled = $c.IsEnabled
-      offscreen = $c.IsOffscreen
-      rect = @{ x = [int]$r.X; y = [int]$r.Y; w = [int]$r.Width; h = [int]$r.Height }
-      value = $hasValue
-      invoke = $hasInvoke
-      text = $hasText
-    }
-    $i++
-  }
-  Emit @{
-    ok = $true
-    window = @{ pid = $t.pid; title = $t.name; class = $t.cls; hwnd = $t.hwnd; foreground = $t.foreground; rect = $t.rect }
-    total = $all.Count
-    returned = $elems.Count
-    elements = $elems
-  }
-}
-
-# --- settext: no-focus write via UIA ValuePattern, else WM_SETTEXT ---
-if ($Action -eq 'settext') {
-  $t = Get-TargetWindow
-  if (-not $t) { Fail 'target window not found' }
-
-  $cond = [System.Windows.Automation.Condition]::TrueCondition
-  $all = $t.element.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
-  if ($Index -lt 0 -or $Index -ge $all.Count) { Fail "index out of range (0..$($all.Count - 1))" }
-  $e = $all[$Index]
+  if ($idx -lt 0 -or $idx -ge $all.Count) { throw "index out of range (0..$($all.Count - 1))" }
+  $e = $all[$idx]
   if ($ExpectName -ne '' -and $e.Current.Name -ne $ExpectName) {
-    Fail ("name mismatch: expected '" + $ExpectName + "' but index " + $Index + " is '" + $e.Current.Name + "'")
+    throw ("name mismatch: expected '" + $ExpectName + "' but index " + $idx + " is '" + $e.Current.Name + "'")
   }
+  return $e
+}
 
-  $method = ''
-  try {
-    $vp = [System.Windows.Automation.ValuePattern]$e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-    $vp.SetValue($Text)
-    $method = 'uia-value'
-  } catch {
-    $h = [IntPtr]$e.Current.NativeWindowHandle
-    if ($h -eq [IntPtr]::Zero) {
-      $r = $e.Current.BoundingRectangle
-      $h = [IntPtr]$t.hwnd
+function Invoke-Action {
+  switch ($Action) {
+
+    'list' {
+      $root = [System.Windows.Automation.AutomationElement]::RootElement
+      $cond = [System.Windows.Automation.Condition]::TrueCondition
+      $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
+      $fg = [W32cu]::GetForegroundWindow()
+      $list = @()
+      foreach ($w in $wins) {
+        $c = $w.Current
+        $hwnd = [IntPtr]$c.NativeWindowHandle
+        if (-not [W32cu]::IsWindowVisible($hwnd)) { continue }
+        $rect = New-Object W32cu+RECT
+        [void][W32cu]::GetWindowRect($hwnd, [ref]$rect)
+        $list += @{
+          pid = $c.ProcessId
+          title = $c.Name
+          class = $c.ClassName
+          hwnd = $hwnd.ToInt64()
+          foreground = ($hwnd -eq $fg)
+          minimized = [W32cu]::IsIconic($hwnd)
+          width = ($rect.Right - $rect.Left)
+          height = ($rect.Bottom - $rect.Top)
+        }
+      }
+      return @{ ok = $true; count = $list.Count; windows = $list }
     }
-    $ret = [W32cu]::SendMessageStr($h, $WM_SETTEXT, [IntPtr]::Zero, $Text)
-    $method = 'wm-settext'
-  }
 
-  # read back for verification
-  $readBack = ''
-  try {
-    $h2 = [IntPtr]$e.Current.NativeWindowHandle
-    $len = [W32cu]::SendMessageInt($h2, $WM_GETTEXTLENGTH, [IntPtr]::Zero, [IntPtr]::Zero).ToInt64()
-    if ($len -ge 0 -and $len -lt 100000) {
-      $sb = New-Object System.Text.StringBuilder ($len + 1)
-      [void][W32cu]::SendMessageInt($h2, $WM_GETTEXT, [IntPtr]($len + 1), [IntPtr]::Zero)
+    'observe' {
+      $t = Get-TargetWindow
+      if (-not $t) { throw 'target window not found' }
+      $cond = [System.Windows.Automation.Condition]::TrueCondition
+      $all = $t.element.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+      $elems = @()
+      $i = 0
+      foreach ($e in $all) {
+        if ($i -ge $Max) { break }
+        $c = $e.Current
+        $ct = ''
+        try { $ct = $c.ControlType.ProgrammaticName -replace 'ControlType\.', '' } catch {}
+        $r = $c.BoundingRectangle
+        $hasValue = $false; $hasInvoke = $false; $hasText = $false
+        try { [void]$e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern); $hasValue = $true } catch {}
+        try { [void]$e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern); $hasInvoke = $true } catch {}
+        try { [void]$e.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern); $hasText = $true } catch {}
+        $elems += @{
+          index = $i
+          type = $ct
+          class = $c.ClassName
+          name = $c.Name
+          hwnd = $c.NativeWindowHandle
+          enabled = $c.IsEnabled
+          offscreen = $c.IsOffscreen
+          rect = @{ x = [int]$r.X; y = [int]$r.Y; w = [int]$r.Width; h = [int]$r.Height }
+          value = $hasValue
+          invoke = $hasInvoke
+          text = $hasText
+        }
+        $i++
+      }
+      $res = @{
+        ok = $true
+        window = @{ pid = $t.pid; title = $t.name; class = $t.cls; hwnd = $t.hwnd; foreground = $t.foreground; rect = $t.rect }
+        total = $all.Count
+        returned = $elems.Count
+        elements = $elems
+      }
+      if ($WithShot -and $Out -ne '') {
+        try { $res.screenshot = Capture-Window $t $Out }
+        catch { $res.screenshotError = $_.Exception.Message }
+      }
+      return $res
     }
-  } catch {}
 
-  Emit @{
-    ok = $true
-    method = $method
-    index = $Index
-    element = @{ type = $e.Current.ControlType.ProgrammaticName; name = $e.Current.Name; class = $e.Current.ClassName }
-    written = $Text
+    'settext' {
+      $t = Get-TargetWindow
+      if (-not $t) { throw 'target window not found' }
+      $e = Get-ElementAt $t $Index
+      $method = ''
+      try {
+        $vp = [System.Windows.Automation.ValuePattern]$e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+        $vp.SetValue($Text)
+        $method = 'uia-value'
+      } catch {
+        $h = [IntPtr]$e.Current.NativeWindowHandle
+        if ($h -eq [IntPtr]::Zero) { $h = [IntPtr]$t.hwnd }
+        [void][W32cu]::SendMessageStr($h, $WM_SETTEXT, [IntPtr]::Zero, $Text)
+        $method = 'wm-settext'
+      }
+      return @{
+        ok = $true
+        method = $method
+        index = $Index
+        element = @{ type = $e.Current.ControlType.ProgrammaticName; name = $e.Current.Name; class = $e.Current.ClassName }
+        written = $Text
+      }
+    }
+
+    'invoke' {
+      $t = Get-TargetWindow
+      if (-not $t) { throw 'target window not found' }
+      $e = Get-ElementAt $t $Index
+      try {
+        $ip = [System.Windows.Automation.InvokePattern]$e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        $ip.Invoke()
+        return @{ ok = $true; method = 'uia-invoke'; index = $Index; name = $e.Current.Name }
+      } catch {
+        throw ("invoke not supported: " + $_.Exception.Message)
+      }
+    }
+
+    'clickxy' {
+      $t = Get-TargetWindow
+      if (-not $t) { throw 'target window not found' }
+      $hwnd = [IntPtr]$t.hwnd
+      $lp = [IntPtr](($Y -shl 16) -bor ($X -band 0xFFFF))
+      [void][W32cu]::SendMessageInt($hwnd, $WM_LBUTTONDOWN, [IntPtr]$MK_LBUTTON, $lp)
+      Start-Sleep -Milliseconds 40
+      [void][W32cu]::SendMessageInt($hwnd, $WM_LBUTTONUP, [IntPtr]::Zero, $lp)
+      return @{ ok = $true; method = 'wm-click'; x = $X; y = $Y; window = $t.name }
+    }
+
+    'drag' {
+      $t = Get-TargetWindow
+      if (-not $t) { throw 'target window not found' }
+      $hwnd = [IntPtr]$t.hwnd
+      $steps = 14
+      $lp = [IntPtr](($Y -shl 16) -bor ($X -band 0xFFFF))
+      [void][W32cu]::SendMessageInt($hwnd, $WM_LBUTTONDOWN, [IntPtr]$MK_LBUTTON, $lp)
+      Start-Sleep -Milliseconds 60
+      for ($i = 1; $i -le $steps; $i++) {
+        $cx = [int]($X + ($X2 - $X) * $i / $steps)
+        $cy = [int]($Y + ($Y2 - $Y) * $i / $steps)
+        $mv = [IntPtr](($cy -shl 16) -bor ($cx -band 0xFFFF))
+        [void][W32cu]::SendMessageInt($hwnd, $WM_MOUSEMOVE, [IntPtr]$MK_LBUTTON, $mv)
+        Start-Sleep -Milliseconds 18
+      }
+      $end = [IntPtr](($Y2 -shl 16) -bor ($X2 -band 0xFFFF))
+      [void][W32cu]::SendMessageInt($hwnd, $WM_LBUTTONUP, [IntPtr]::Zero, $end)
+      return @{
+        ok = $true
+        method = 'wm-drag'
+        from = @{ x = $X; y = $Y }
+        to = @{ x = $X2; y = $Y2 }
+        steps = $steps
+        window = $t.name
+      }
+    }
+
+    'screenshot' {
+      if ($Out -eq '') { throw 'need -Out path' }
+      $t = Get-TargetWindow
+      $shot = Capture-Window $t $Out
+      $shot.ok = $true
+      $shot.window = $(if ($t) { $t.name } else { '(full screen)' })
+      return $shot
+    }
+
+    default { throw "unknown action: $Action" }
   }
 }
 
-# --- invoke: UIA InvokePattern ---
-if ($Action -eq 'invoke') {
-  $t = Get-TargetWindow
-  if (-not $t) { Fail 'target window not found' }
-  $cond = [System.Windows.Automation.Condition]::TrueCondition
-  $all = $t.element.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
-  if ($Index -lt 0 -or $Index -ge $all.Count) { Fail "index out of range (0..$($all.Count - 1))" }
-  $e = $all[$Index]
-  if ($ExpectName -ne '' -and $e.Current.Name -ne $ExpectName) {
-    Fail ("name mismatch: expected '" + $ExpectName + "' but index " + $Index + " is '" + $e.Current.Name + "'")
-  }
-  try {
-    $ip = [System.Windows.Automation.InvokePattern]$e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-    $ip.Invoke()
-    Emit @{ ok = $true; method = 'uia-invoke'; index = $Index; name = $e.Current.Name }
-  } catch {
-    Fail ("invoke not supported: " + $_.Exception.Message)
-  }
-}
+# Decode base64 arguments for the single-shot invocation.
+if ($TextB64 -ne '') { $Text = Decode $TextB64 }
+if ($TitleB64 -ne '') { $Title = Decode $TitleB64 }
+if ($ExpectNameB64 -ne '') { $ExpectName = Decode $ExpectNameB64 }
 
-# --- clickxy: no-focus click at window-relative coordinates ---
-if ($Action -eq 'clickxy') {
-  $t = Get-TargetWindow
-  if (-not $t) { Fail 'target window not found' }
-  $hwnd = [IntPtr]$t.hwnd
-  $WM_LBUTTONDOWN = 0x0201
-  $WM_LBUTTONUP = 0x0202
-  $MK_LBUTTON = 0x0001
-  $lparam = [IntPtr](($Y -shl 16) -bor ($X -band 0xFFFF))
-  [void][W32cu]::SendMessageInt($hwnd, $WM_LBUTTONDOWN, [IntPtr]$MK_LBUTTON, $lparam)
-  Start-Sleep -Milliseconds 40
-  [void][W32cu]::SendMessageInt($hwnd, $WM_LBUTTONUP, [IntPtr]::Zero, $lparam)
-  Emit @{ ok = $true; method = 'wm-click'; x = $X; y = $Y; window = $t.name }
-}
-
-# --- screenshot: capture window rect to PNG ---
-if ($Action -eq 'screenshot') {
-  if ($Out -eq '') { Fail 'need -Out path' }
-  $t = Get-TargetWindow
-  $left = 0; $top = 0; $w = 0; $h = 0
-  if ($t) {
-    $rect = New-Object W32cu+RECT
-    [void][W32cu]::GetWindowRect([IntPtr]$t.hwnd, [ref]$rect)
-    $left = $rect.Left; $top = $rect.Top
-    $w = $rect.Right - $rect.Left; $h = $rect.Bottom - $rect.Top
-  } else {
-    $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $w = $bounds.Width; $h = $bounds.Height
-  }
-  if ($w -le 0 -or $h -le 0) { Fail 'window has no area (minimized?)' }
-  $bmp = New-Object System.Drawing.Bitmap $w, $h
-  $g = [System.Drawing.Graphics]::FromImage($bmp)
-  $mode = 'screen-copy'
-  if ($t) {
-    # PrintWindow renders the window itself, so an occluded window still
-    # captures correctly. PW_RENDERFULLCONTENT (2) is what Chromium apps need.
+# ---------------------------------------------------------------- serve mode
+if ($Action -eq 'serve') {
+  $stdout = [Console]::Out
+  while ($true) {
+    $line = [Console]::In.ReadLine()
+    if ($null -eq $line) { break }
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
     try {
-      $hdc = $g.GetHdc()
-      $ok = [W32cu]::PrintWindow([IntPtr]$t.hwnd, $hdc, 2)
-      $g.ReleaseHdc($hdc)
-      if ($ok) { $mode = 'print-window' }
+      $req = $line | ConvertFrom-Json
+      $script:Action = [string]$req.action
+      $script:Title = ''
+      $script:TargetPid = 0
+      $script:Index = -1
+      $script:ExpectName = ''
+      $script:Text = ''
+      $script:X = 0; $script:Y = 0; $script:X2 = 0; $script:Y2 = 0
+      $script:Max = 120
+      $script:Out = ''
+      $script:WithShot = $false
+
+      if ($null -ne $req.pid) { $script:TargetPid = [int]$req.pid }
+      if ($null -ne $req.index) { $script:Index = [int]$req.index }
+      if ($null -ne $req.max) { $script:Max = [int]$req.max }
+      if ($null -ne $req.x) { $script:X = [int]$req.x }
+      if ($null -ne $req.y) { $script:Y = [int]$req.y }
+      if ($null -ne $req.x2) { $script:X2 = [int]$req.x2 }
+      if ($null -ne $req.y2) { $script:Y2 = [int]$req.y2 }
+      if ($null -ne $req.out) { $script:Out = [string]$req.out }
+      if ($req.withShot) { $script:WithShot = $true }
+      if ($req.titleB64) { $script:Title = Decode ([string]$req.titleB64) }
+      if ($req.expectNameB64) { $script:ExpectName = Decode ([string]$req.expectNameB64) }
+      if ($req.textB64) { $script:Text = Decode ([string]$req.textB64) }
+
+      $result = Invoke-Action
+      $stdout.WriteLine(($result | ConvertTo-Json -Depth 8 -Compress))
     } catch {
-      try { $g.ReleaseHdc($hdc) } catch {}
+      $stdout.WriteLine((@{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress))
     }
+    $stdout.Flush()
   }
-  if ($mode -eq 'screen-copy') {
-    $g.CopyFromScreen($left, $top, 0, 0, (New-Object System.Drawing.Size $w, $h))
-  }
-  $g.Dispose()
-  $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
-  $bmp.Dispose()
-  Emit @{ ok = $true; path = $Out; width = $w; height = $h; mode = $mode; window = $(if ($t) { $t.name } else { '(full screen)' }) }
+  exit 0
 }
 
-Fail "unknown action: $Action"
+# ---------------------------------------------------------------- single mode
+try {
+  Emit (Invoke-Action)
+} catch {
+  @{ ok = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress
+  exit 1
+}
