@@ -1,205 +1,163 @@
 # dsh-computer-use
 
-[![test](https://github.com/xushengqiong-ship/dsh-computer-use/actions/workflows/test.yml/badge.svg)](https://github.com/xushengqiong-ship/dsh-computer-use/actions/workflows/test.yml)
+给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 用的 Computer Use 插件：让 agent 读取桌面界面、
+点击控件、输入文字——多数情况下**不抢你的焦点**，需要时也有真实键鼠通道兜底。
 
-[English](README.md) | 简体中文
+状态：`1.4.0`。**只有 Windows 10/11 在真机上验证过。** macOS 和 Linux 的 provider 存在，但只读、未实测。
 
-**跨平台的 DeepSeek Harness Computer Use。** 一套工具名，三个平台 provider：读取真实应用的界面元素树、点击控件、**不抢焦点**地写入文本，并且能在窗口被遮挡时截准图。
+---
 
-灵感来自 [dsh-computer-use](https://github.com/Anionex/dsh-computer-use)（仅 macOS）。独立实现，不共享代码。
+## 能做什么
 
-## 平台支持 —— 请先看这张表
+| 工具 | 作用 |
+| --- | --- |
+| `computer_status` | 报告平台就绪状态和能力矩阵 |
+| `computer_list_windows` | 列出可见顶层窗口（pid、标题、尺寸、类名、前台/最小化） |
+| `computer_inspect` | 读元素树：类型、名称、坐标、能否点击/写入、文本内容 |
+| `computer_act` | **后台通道** —— `invoke` · `set-text` · `scroll-to` · `scroll-page` · `activate` · `click` · `drag` |
+| `computer_input` | **前台通道** —— `move` · `hover` · `click` · `double-click` · `right-click` · `middle-click` · `drag` · `scroll` · `press` · `type` · `wait` |
+| `computer_screenshot` | 截窗口或整屏为 PNG |
+| `computer_clipboard` | 读写纯文本剪贴板 |
+| `computer_watch` | 等窗口打开/关闭，或等你按下某个键 |
+| `computer_scan` | 滚动长页面并逐屏截图 |
 
-各平台能力**确实不同**。下表是代码实际行为，不是愿望清单：
+### 两条输入通道
+
+| | `computer_act`（后台） | `computer_input`（前台） |
+| --- | --- | --- |
+| 机制 | UI Automation 语义 + 窗口消息 | 真实 `mouse_event` / `keybd_event` 注入 |
+| 移动你的光标 | 不会 | **会** |
+| 需要目标在前台 | 不需要 | 键盘/打字需要 |
+| 能操作 canvas / 游戏 | 不能 | **能** |
+| 你还能同时用电脑 | 可以 | 不行——输入被接管 |
+
+你在干别的事、要我在某个窗口里后台干活 → 用后台通道。目标只认真实鼠标键盘（canvas、游戏）→ 用前台通道，
+代价是光标被我接管。
+
+---
+
+## 平台支持
 
 | 平台 | 列窗口 | 元素树 | 点击元素 | 写文本 | 截图 |
 | --- | --- | --- | --- | --- | --- |
 | **Windows 10 / 11**（家庭版 / 专业版 / 企业版 / 教育版） | ✅ | ✅ 完整 UIA | ✅ 不抢焦点 | ✅ 不抢焦点 | ✅ 遮挡安全 |
-| **macOS 14+** | ✅ | ⚠️ 仅窗口下一层 | ❌ **只读** | ❌ | ⚠️ 仅整屏 |
-| **Linux（X11 / Wayland）** | ✅ wmctrl | ❌ | ❌ **只读** | ❌ | ✅ 整屏 |
+| **macOS 14+** | ✅ | ⚠️ 仅窗口下一层 | ❌ 只读 | ❌ | ⚠️ 仅整屏 |
+| **Linux（X11 / Wayland）** | ✅ wmctrl | ❌ | ❌ 只读 | ❌ | ✅ 整屏 |
 
-**只有 Windows 在真机上验证过。** macOS 和 Linux 的 provider 是按各自官方 API 写的，但这里没法实测——请当作尽力而为。
+**只有 Windows 在真机上验证过。** macOS 和 Linux 的 provider 是按各自官方 API 写的，但这里没法实测。
 
-### 为什么 macOS / Linux 是只读的（0.4.0）
+这两个平台是**故意只读**的：`osascript` 的 `keystroke` 和 `xdotool` 的合成输入是全局的或不可靠的——它们作用在
+当时有焦点的窗口上，或者被 GTK/Qt/Wayland 目标静默忽略。把它当作 `computer_act` 暴露，意味着「往我指定的应用
+里打字」可能打到别的程序上，而且不报错。
 
-`osascript` 的 `keystroke` / `click at`，以及 `xdotool` 的合成输入，是**全局的或不可靠的**：它们作用在当时有焦点的窗口上，或者被 GTK/Qt/Wayland 目标静默忽略。把它们当作 `computer_act` 暴露出去，意味着「往我指定的应用里打字」可能打到别的程序上——而且不报错。既然没有原生按窗口的后端就做不安全，这两个平台现在只做观测，所有写操作返回 `unsupported` 并说明原因。
+---
 
-### Linux 为什么弱
+## 安装
 
-Linux 没有能对标 UIA / AX 的跨工具包无障碍 API。AT-SPI2 存在，但需要 `pyatspi` 桥接，且不同桌面、不同工具包（GTK / Qt / Electron）行为各异。与其塞一个"看起来能用其实静默失败"的实现，Linux provider 只做它可靠能做的部分——列窗口、截图、xdotool 输入——元素树则**明确返回不支持**。
+```bash
+dsh plugin --profile <你的profile> add <路径或包名>
+```
 
-## 工具
+它是标准的 DSH bundle：`package.json` 里有 `dsh.bundle.patch`，`cordis.patch.yml` 插入插件行。
+依赖 `koffi` 和 `pngjs` 都是预编译的，**不需要任何编译工具链**。
 
-| 工具 | 作用 |
-| --- | --- |
-| `computer_status` | 报告平台、就绪状态、具备哪些能力 |
-| `computer_list_windows` | 列出可见顶层窗口（pid、标题、尺寸；Windows 上还有类名、前台/最小化） |
-| `computer_inspect` | 读元素树（类型、名称、坐标、可点击、可写入），可同时截图 |
-| `computer_act` | **后台通道**：`invoke` · `set-text` · `scroll-to` · `activate` · `click` · `drag` —— 定向到窗口，不动光标 |
-| `computer_input` | **前台通道**：`move` · `hover` · `click` · `double-click` · `right-click` · `middle-click` · `drag` · `scroll` · `press` · `type` · `wait` —— 真实 SendInput 事件 |
-| `computer_screenshot` | 截窗口或整屏为 PNG；配合 `read_image` 就能真的看见 |
+### 开发时热重载
 
-### 两条输入通道，两种取舍
+改完插件代码**不需要重启整个 harness**：
 
-| | `computer_act`（后台） | `computer_input`（前台） |
+```
+plugin_manager set_plugin <entryId> enabled=false   → applied
+plugin_manager set_plugin <entryId> enabled=true    → applied（代码重新加载）
+```
+
+新建会话就会拿到新的工具表；已经存在的会话保留旧的。
+
+---
+
+## 已知限制
+
+### 杀毒软件与输入注入
+
+某些安全软件会专门拦**模拟垂直滚轮**。在一台装了联想预装的火绒组件（`usysdiag` + `HRWSCCtrl`）的机器上，
+`mouse_event` 和 `SendInput` 的滚轮事件**完全到不了任何应用**——连记事本都滚不动——而 `WM_VSCROLL` 和键盘注入
+照常工作。
+
+所以 `computer_scan` 用的是分级降级，而不是单一机制：
+
+| 目标 | 纵向 | 横向 |
 | --- | --- | --- |
-| 机制 | UIA 语义操作 + 窗口消息 | `SendInput` —— 真实指针/键盘事件 |
-| 移动你的光标 | ❌ 不会 | ✅ **会** |
-| 需要目标在前台 | ❌ 不需要 | ✅ 键盘/打字需要 |
-| 能操作 canvas / 游戏 | ❌ 不能 | ✅ **能** |
-| 你还能同时用电脑 | ✅ 可以 | ❌ 输入被接管 |
+| Win32（记事本 / 资源管理器 / Office） | `WM_VSCROLL` 消息 | `WM_HSCROLL` |
+| Chromium / Electron（Codex / Chrome） | 点击聚焦后用 `PageUp` / `PageDown` | Shift + 滚轮 |
 
-你在干别的事、要我在某个窗口里后台干活 → 用后台通道。
-目标只认真实鼠标键盘（canvas、游戏、特殊控件）→ 用前台通道，代价是光标被我接管。
+如果你的机器上注入被完全禁掉，后台通道仍然可用，只有 `computer_input` 受影响。
 
-## 各平台怎么实现的
+### 工具结果必须是纯文本
 
-| 平台 | 机制 |
-| --- | --- |
-| Windows | 用 **Windows PowerShell 5.1** 调 `UIAutomationClient`（.NET Framework），并**常驻一个 `serve` 进程**；点击用 `InvokePattern`；旧控件写入回退 `WM_SETTEXT`；遮挡截图用 `PrintWindow(PW_RENDERFULLCONTENT)`；拖拽用 `WM_LBUTTONDOWN/MOUSEMOVE/UP` |
-| macOS | `osascript` 驱动 System Events（`click button`、`keystroke`、`click at`）；截图用 `screencapture` |
-| Linux | `wmctrl` 列窗口、`xdotool` 做输入、`grim` / ImageMagick / `gnome-screenshot` 截图；无元素树 |
+DSH 会拒绝含单个 `undefined` 的结果（`value is not lossless JSON`）；而且——这是实打实踩出来的——
+如果某个工具的 `render` 返回**图像内容块**，整个模型请求会以 `DeepSeek Messages transport failed` 失败。
+所以这里所有工具只返回纯文本，结果统一过一个 `clean()` 包装，也不声明任何嵌套 object 参数。
 
-### 为什么要常驻
+截图返回路径，要看图请另调工具。
 
-启动一次 Windows PowerShell 大约要 **1 秒**（进程启动 + .NET 程序集加载）。本机连续跑 5 次窗口列表实测：
+### 其它约束
 
-| 模式 | 每次耗时 |
-| --- | --- |
-| 一次性 spawn | 999 ms |
-| 常驻 `serve` 进程 | **27 ms** |
+- **canvas 内容对 UIA 不可见。** 画在 canvas 上的棋盘只是一个不透明矩形，请截图。
+- **Chromium/Electron 应用**只有在开启 accessibility 时才把网页内容暴露给 UIA。DSH 自己是暴露的；
+  不暴露的应用请截图。
+- **Qt 应用**（比如微信）可能几乎什么都不暴露——只有一个标题栏。那种地方只有「截图 + 坐标」这条路。
+- **拖拽是基于消息的，并非万能。** 依赖真实鼠标捕获的控件（记事本的编辑区、很多 canvas 控件）会
+  报告成功但其实没选中。
+- **最小化窗口**没有可用几何信息，先恢复再操作。
+- **不做全局输入注入。** `computer_act` 从不移动系统光标、不发全局按键。
 
-差 **37 倍**，所以 Windows provider 会保持一个 helper 活着，每次请求交换一行 JSON。请求串行执行（PowerShell 单线程），卡住会超时并杀掉重启，任何失败都回退到一次性 spawn。
+---
 
-`computer_inspect` 带 `screenshot: true` 时，**元素树和截图在同一次往返里完成**，不再是两次调用。
+## 实现结构
 
-Windows 每次调用都重新枚举实时树，所以元素序号不会被重放到已经变化的窗口上。`expectName` 是硬校验：名字不完全匹配就拒绝执行。
+```
+lib/index.mjs          工具定义（纯文本结果，无嵌套）
+lib/providers/win.mjs  Windows provider：UIA 走 helper，截图/输入走 native
+lib/providers/mac.mjs  macOS provider（只读，osascript）
+lib/providers/linux.mjs Linux provider（只读，wmctrl）
+lib/native/win32.mjs   koffi FFI：PrintWindow 截图、mouse_event/keybd_event、剪贴板
+lib/helper.ps1         Windows PowerShell 5.1 helper：只做 UI Automation
+lib/helper-client.mjs  常驻 helper 客户端（每次请求一行 JSON）
+```
+
+**为什么截图和输入走原生，不走 PowerShell：** 用 PowerShell 截窗口位图的脚本会被 Windows Defender 判成
+`HackTool:PowerShell/EmpireGetScreenshot.C`，随后 AMSI 阻断**整个脚本**——所有能力一起失效。把截图和注入搬到
+Node（通过 `koffi`，预编译）就消除了这条失效路径：实测把 helper 放到没有任何杀毒排除项的路径下执行，不再被拦。
+
+顺带快了：每张截图约 **185ms**，PowerShell 版约 900ms。
+
+**为什么要常驻 helper：** 启动一次 Windows PowerShell 大约要 1 秒。一个 `serve` 进程按行应答 JSON，
+把 UIA 往返压到约 **27ms**——差 **37 倍**。请求串行执行，卡住会超时杀掉，失败会回退到一次性 spawn。
+
+**DPI：** Node 进程默认是 DPI-unaware，在 200% 缩放的屏幕上 `GetWindowRect` 只报告一半尺寸，
+`PrintWindow` 也就只渲染左上角。截图时把线程 DPI 上下文提到 `PER_MONITOR_AWARE_V2`、截完恢复；
+输入则留在 `SetCursorPos` 期望的逻辑坐标系里。
+
+---
 
 ## 在 Windows 10 (19045) + DSH 0.2.2-rc.3 上的实测
 
 | 检查项 | 结果 |
 | --- | --- |
-| 枚举窗口 | 12 个可见顶层窗口 |
-| 读 DSH 自己的 Electron 界面 | **502–783 个 UIA 元素**（随视图状态变化） |
+| 枚举窗口 | 11 个可见顶层窗口 |
+| 读 DSH 自己的 Electron 界面 | **637 个 UIA 元素** |
+| 读 WinUI 应用 | 计算器 59 个元素；`7+8=15` 全程由后台通道完成 |
+| 真实键盘输入 | 283 个 ASCII 字符落进记事本，光标移到第 30 行 |
+| 滚动长页面 | `computer_scan` 拍到 3 屏，最后一屏露出了原先看不见的行 |
 | 常驻加速 | 27 ms/次 vs 一次性 999 ms/次（**37×**） |
-| 树 + 截图一次返回 | 3526 个元素 + 一张 PNG，一次往返 |
-| 点击控件 | `InvokePattern` 收起侧边栏并恢复 |
-| 写中文 | 经 `WM_SETTEXT` 写入记事本，UTF-8 完好 |
-| 截被遮挡窗口 | 记事本被完全盖住，`PrintWindow` 仍截准 |
-| 拖拽 | 消息式拖拽报告成功，但见下方限制 |
+| 截图速度 | 185 ms/张（原生 PrintWindow） |
+| 剪贴板往返 | 中文写入后读回完全一致 |
+| 端到端 | 在 Codex 里读完一段长对话、定位输入框、输入 246 个字符（含中文）并发送 |
 
-## 已知限制
-
-- **canvas 内容对 UIA 不可见。** 画在 canvas 上的棋盘只是一个不透明矩形，没有控件可点。要么截图，要么让程序把状态导出成文本。
-- **Chromium/Electron 应用**只有在开启 accessibility 时才把网页内容暴露给 UIA。DSH 自己是暴露的（实测 783 个元素）；不暴露的应用请用 `computer_screenshot` + `read_image`。
-- **拖拽是基于消息的，并非万能。** 它给目标窗口发 `WM_LBUTTONDOWN` / `WM_MOUSEMOVE` / `WM_LBUTTONUP`，所以不抢焦点——但依赖真实鼠标捕获的控件（记事本的编辑区、很多 canvas 控件）会「报告成功但其实没选中」。实测：在记事本里横向拖过文字，没有产生选区。优先用 `set-text` / `invoke`，拖拽当作尽力而为。
-- **最小化窗口**没有可用几何信息，先恢复再操作。
-- **不做全局输入注入。** 不移动系统光标、不发全局按键，一切都定向到具体窗口。
-
-## 安装
-
-```powershell
-# Windows
-dsh plugin --profile <profile> add file:C:\path\to\dsh-computer-use
-```
-
-```bash
-# macOS / Linux，命令形状一样
-dsh plugin --profile <profile> add file:/path/to/dsh-computer-use
-```
-
-然后重启 DSH，让 bundle 和工具加载。
-
-### 前置条件
-
-| 平台 | 需要什么 |
-| --- | --- |
-| Windows | Windows PowerShell 5.1（Windows 10/11 自带）。可用 `DSH_WIN_CU_POWERSHELL` 覆盖 |
-| macOS | 给运行 DSH 的程序授予「辅助功能」权限（系统设置 → 隐私与安全性 → 辅助功能）|
-| Linux | `wmctrl`、`xdotool`，以及截图工具（Wayland 用 `grim`，否则 ImageMagick 或 `gnome-screenshot`）|
-
-## 安全
-
-- 没有任何工具会删文件、杀进程、关机，或把输入发到选定窗口之外。
-- `computer_act` 支持 `expectName`：给了就必须完全匹配——做不可逆操作时务必带上。
-- 只读动作（`computer_status`、`computer_list_windows`、`computer_inspect`）绝不修改窗口。
-- 截图可能包含屏幕上的任何内容，按敏感数据处理。
-
-## 自测
-
-```powershell
-node --check lib/index.mjs
-node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-platform.mjs
-node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mjs   # 会真的碰桌面
-```
-
-## 路线图
-
-- 借鉴官方 macOS 版的 **observation 生命周期**（observationId + 过期 + 动作前校验），防止在已变化的界面上误操作
-- macOS provider 在真机验证，尤其权限与 System Events 的层级限制
-- Linux：尝试 AT-SPI2 桥接，至少支持 GTK 应用
-- 敏感操作的一次性确认令牌
-
-## 滚动：哪种方式在哪些应用上有效
-
-联想预装的杀毒组件（Lenovo Windows Security Center / 火绒）会拦截**模拟垂直滚轮**，但窗口消息和键盘注入仍然可用。所以 `computer_scan` 用分级降级，而不是单一机制：
-
-| 目标 | 纵向 | 横向 |
-| --- | --- | --- |
-| Win32（记事本 / 资源管理器 / Office） | `WM_VSCROLL` 消息 ✅ | `WM_HSCROLL` |
-| Chromium / Electron（Codex / Chrome） | 点击聚焦 + `PageUp`/`PageDown` ✅ | **Shift + 滚轮 ✅** |
-
-在 20 列宽表上实测：Shift+滚轮把视图从 `COL-01` 滚到了 `COL-11`。同一个 Chromium 视图里普通滚轮完全无效——所以不是"注入全死"，而是"Chromium 忽略合成的垂直滚轮滚动"。
-
-## 0.8.0 新增：原生截图与输入（不再被杀毒软件拦）
-
-截图和输入原本写在 PowerShell helper 里。Windows Defender 会把「用 PowerShell 截窗口位图」判成 `HackTool:PowerShell/EmpireGetScreenshot.C`，通过 AMSI 直接阻断整个脚本——所有能力一起失效。
-
-现在两者都改由 Node.js 通过 `koffi` FFI 直接调 `user32.dll` / `gdi32.dll`：
-
-| | PowerShell helper | 原生（koffi） |
-| --- | --- | --- |
-| 窗口截图 | ~900 ms | **185 ms** |
-| AMSI 脚本扫描 | ❌ 被拦 | ✅ 不适用 |
-| 需要加杀毒排除 | 需要 | **不需要** |
-
-helper 现在只剩 UI Automation。已实测：把 `helper.ps1` 复制到任何排除路径之外执行，Defender 不再报毒。
-
-## 0.5.0 新增：前台输入通道
-
-借鉴 Codex computer-use 暴露的输入接口，补上了 `computer_input`：
-
-- `move` / `click` / `drag` / `scroll` / `press`（支持 `ctrl+s` 这种组合键）/ `type`（支持中文）
-- 走真实 `SendInput`，所以**能操作 canvas、游戏、任何界面**
-- 代价：会移动系统光标；键盘输入需要目标窗口在前台
-
-实测（Windows 10）：光标移动 ✅（962,533 → 400,300，测试后已复原）、打字 ✅（记事本写入 `SendInput typing works 123`）。
-
-## 0.4.0 修了什么
-
-| 编号 | 问题 | 修法 |
-| --- | --- | --- |
-| A01 | 常驻失败后**重放**写动作 | 写动作返回 `state: 'unknown'`，永不重试 |
-| A02 | 回退路径读的是 `req.title`，而线上字段是 `titleB64` | 一份业务请求、两处编码；回退读原始参数 |
-| A03 | 死进程的迟到事件会结算新请求 | 每个请求绑定到自己的进程实例 |
-| A05 | `click` 落到 `unknown action` | 显式映射 `click → clickxy` |
-| A08 | 写入回退到顶层窗口句柄（会改窗口标题） | 元素没有自己的 HWND 就直接拒绝 |
-| A09 | `set-text` 把请求文本当成结果返回 | 回读校验，返回 `verified / applied-unverified` |
-| A10 | 目标找不到时静默截整屏 | 直接失败；截图带 `scope: window / screen` |
-| A11 | 点击用客户端坐标，截图用窗口坐标 | 用 `ClientToScreen` 算偏移，返回 `offset` |
-| A12/A13 | macOS/Linux 的输入是全局的 | 两个 provider 改为只读，写操作返回 `unsupported` |
-| A14 | 能力报告含糊 | `computer_status` 按平台列出具体能力 |
-
-## 仍然待办
-
-- Observation ID（A07）：UIA 的 `RuntimeId` 在很多控件上是空的（记事本编辑区实测为空），所以身份要由 AutomationId + ControlType + 名称 + 树路径组合——方案有了但未实现
-- UIA 遍历的边界（B01）和更完整的模型可见输出（B02）
-- Windows 的 `type-text`（真实键盘输入）是刻意没做的
-
-## 许可
-
-MIT。
+CI 跑在 `windows-latest` + Node 22/24：语法检查、`helper.ps1` 解析、平台无关的加载测试。
+GitHub runner 没有交互式桌面，真实 UI 自动化不在 CI 覆盖范围内。
 
 ---
 
-> 状态：`0.5.0`。Windows 已验证（含前台输入）；macOS / Linux 只读，未在真机测试。
+## 许可
+
+MIT
