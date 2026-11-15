@@ -325,7 +325,9 @@ function Invoke-Action {
             $actual = $sb.ToString()
           }
         }
-        if ($null -ne $actual) { $verified = ($actual -eq $Text) }
+        # -ceq, not -eq: PowerShell's -eq is case-insensitive, which would call
+        # "ABC" a verified write of "abc" (A09).
+        if ($null -ne $actual) { $verified = ($actual -ceq $Text) }
       } catch { $actual = $null }
 
       return @{
@@ -457,6 +459,7 @@ if ($Action -eq 'serve') {
       $script:X = 0; $script:Y = 0; $script:X2 = 0; $script:Y2 = 0
       $script:Max = 120
       $script:Out = ''
+      $script:Hwnd = ''
       $script:WithShot = $false
 
       if ($null -ne $req.pid) { $script:TargetPid = [int]$req.pid }
@@ -467,6 +470,7 @@ if ($Action -eq 'serve') {
       if ($null -ne $req.x2) { $script:X2 = [int]$req.x2 }
       if ($null -ne $req.y2) { $script:Y2 = [int]$req.y2 }
       if ($null -ne $req.out) { $script:Out = [string]$req.out }
+      if ($null -ne $req.hwnd) { $script:Hwnd = [string]$req.hwnd }
       if ($req.withShot) { $script:WithShot = $true }
       if ($req.titleB64) { $script:Title = Decode ([string]$req.titleB64) }
       if ($req.expectNameB64) { $script:ExpectName = Decode ([string]$req.expectNameB64) }
