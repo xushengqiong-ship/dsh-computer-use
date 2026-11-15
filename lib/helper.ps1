@@ -255,7 +255,10 @@ function Invoke-Action {
         if ($hasText -and $i -lt 80) {
           try {
             $tp = [System.Windows.Automation.TextPattern]$e.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-            $raw = $tp.DocumentRange.GetText(500)
+            # Document/Text nodes carry the whole scrollable content, not just
+            # what is on screen -- read far more from them than from controls.
+            $limit = $(if ($ct -eq 'Document') { 60000 } elseif ($ct -eq 'Text') { 8000 } else { 500 })
+            $raw = $tp.DocumentRange.GetText($limit)
             if ($null -ne $raw) {
               $raw = $raw.Trim()
               if ($raw -ne '') { $textValue = $raw }
