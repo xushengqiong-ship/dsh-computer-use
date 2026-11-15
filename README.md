@@ -1,99 +1,109 @@
-# dsh-computer-use-win
+# dsh-computer-use
 
-[![test](https://github.com/xushengqiong-ship/dsh-computer-use-win/actions/workflows/test.yml/badge.svg)](https://github.com/xushengqiong-ship/dsh-computer-use-win/actions/workflows/test.yml)
+[![test](https://github.com/xushengqiong-ship/dsh-computer-use/actions/workflows/test.yml/badge.svg)](https://github.com/xushengqiong-ship/dsh-computer-use/actions/workflows/test.yml)
 
 English | [简体中文](README.zh-CN.md)
 
-**Windows-native Computer Use for DeepSeek Harness.** Lets the agent read a real
-application's UI Automation tree, click its controls, write text into it without
-stealing focus, and screenshot it even when it is occluded.
+**Cross-platform Computer Use for DeepSeek Harness.** One tool vocabulary, three
+platform providers: read a real application's UI tree, click its controls, write
+text without stealing focus, and screenshot it even when occluded.
 
-This is an independent Windows counterpart to the excellent
-[`dsh-computer-use`](https://github.com/Anionex/dsh-computer-use) (macOS only).
-It borrows the design goals — observe before acting, never replay a stale target,
-prefer semantic automation over coordinates — but shares no code.
+Inspired by [dsh-computer-use](https://github.com/Anionex/dsh-computer-use) (macOS only).
+Independent implementation, no shared code.
+
+## Platform support — read this first
+
+Capability genuinely differs per platform. This table is what the code actually
+does, not an aspiration:
+
+| Platform | List windows | Element tree | Click element | Write text | Screenshot |
+| --- | --- | --- | --- | --- | --- |
+| **Windows 10 / 11** (Home / Pro / Enterprise / Education) | ✅ | ✅ full UIA | ✅ no focus steal | ✅ no focus steal | ✅ occluded-safe |
+| **macOS 14+** | ✅ | ⚠️ one level below each window | ✅ System Events | ✅ keystroke | ⚠️ full screen only |
+| **Linux · X11** | ✅ wmctrl | ❌ not implemented | ⚠️ coordinates only | ✅ xdotool (needs focus) | ✅ |
+| **Linux · Wayland** | ✅ wmctrl | ❌ | ❌ xdotool can't reach native windows | ❌ | ✅ grim |
+
+Legend: ✅ works · ⚠️ partial / caveated · ❌ unsupported
+
+**Windows is the only platform verified on a real machine.** macOS and Linux
+providers are written against their documented APIs but could not be tested
+here; treat them as best-effort and report what breaks.
+
+### Why Linux is weaker
+
+Linux has no cross-toolkit accessibility API comparable to UIA or AX. AT-SPI2
+exists, but it needs a `pyatspi` bridge and behaves differently per desktop and
+per toolkit (GTK vs Qt vs Electron). Rather than ship something that silently
+fails, the Linux provider does what it can — window lists, screenshots, xdotool
+input — and returns an explicit "unsupported" for element inspection.
 
 ## Tools
 
-| Tool | What it does |
+| Tool | Purpose |
 | --- | --- |
-| `win_list_windows` | List visible top-level windows: pid, title, class, size, foreground, minimized |
-| `win_inspect` | Read the UIA element tree of a window (type, name, class, bounds, can-invoke, can-set-value), optionally with a screenshot |
-| `win_act` | `invoke` (click a control), `set-text` (write text), `click` (window-relative coordinate fallback) |
-| `win_screenshot` | Capture a window or the full screen to PNG |
-| `win_status` | Check platform / PowerShell / helper readiness; touches nothing |
+| `computer_status` | Report platform, readiness and which capabilities are available |
+| `computer_list_windows` | List visible top-level windows (pid, title, size, plus class/foreground on Windows) |
+| `computer_inspect` | Read the element tree (type, name, bounds, can-invoke, can-set-value), optional screenshot |
+| `computer_act` | `invoke` click · `set-text` write · `click` coordinate fallback |
+| `computer_screenshot` | Capture window or screen to PNG; pair with `read_image` to actually see it |
 
-Screenshots return a file path — pair `win_screenshot` with `read_image` and the
-agent can actually see the window.
+## How each platform works
 
-## How it works
+| Platform | Mechanism |
+| --- | --- |
+| Windows | `UIAutomationClient` (.NET Framework) through **Windows PowerShell 5.1**; `InvokePattern` for clicks; `WM_SETTEXT` fallback for legacy controls; `PrintWindow(PW_RENDERFULLCONTENT)` for occluded capture |
+| macOS | `osascript` → System Events (`click button`, `keystroke`, `click at`); `screencapture` |
+| Linux | `wmctrl` for windows, `xdotool` for input, `grim` / ImageMagick / `gnome-screenshot` for capture; no element tree |
 
-Everything runs through `lib/helper.ps1`, invoked with **Windows PowerShell 5.1**
-(because `UIAutomationClient` lives in .NET Framework):
-
-| Capability | Mechanism | Why it matters |
-| --- | --- | --- |
-| Read UI | `AutomationElement.FindAll(TreeScope.Descendants)` | Structured controls, not pixels — no OCR guessing |
-| Click | `InvokePattern` | Works without bringing the window forward |
-| Write text | `ValuePattern`, else `WM_SETTEXT` | **No focus stealing**; works on legacy Win32 controls that expose no UIA value pattern |
-| Screenshot | `PrintWindow(..., PW_RENDERFULLCONTENT)` | Captures an **occluded** window; plain `CopyFromScreen` would photograph whatever is on top |
-| Safety | `expectName` must match before acting | A stale index cannot silently click the wrong button |
-
-Every call re-enumerates the live tree, so an index is never replayed against a
-window that changed in the meantime.
+Every Windows call re-enumerates the live tree, so an index is never replayed
+against a window that changed. `expectName` adds a hard guard: the element name
+must match exactly or the action is refused.
 
 ## Verified on Windows 10 (19045) + DSH 0.2.2-rc.3
 
-These are measurements from the development machine, not marketing:
-
 | Check | Result |
 | --- | --- |
-| Enumerate windows | 14 visible top-level windows |
-| Read DSH's own Electron UI | **783 UIA elements** (91 buttons incl. real labels like 「新建会话」) |
+| Enumerate windows | 12 visible top-level windows |
+| Read DSH's own Electron UI | **502–783 UIA elements** depending on view state |
 | Click a control | `InvokePattern` toggled the sidebar and toggled it back |
-| Write CJK text | Chinese text written into Notepad via `WM_SETTEXT`, `utf-8` intact |
-| Screenshot an occluded window | Notepad fully covered by DSH, captured correctly via `PrintWindow` |
-
-## Known limitations
-
-- **Windows only.** On other platforms the tools refuse to run instead of failing strangely.
-- **Chromium/Electron apps**: web content appears in UIA only when the app exposes
-  accessibility. DSH itself does (783 elements measured). Apps that don't will show
-  only their native shell — use `win_screenshot` + `read_image` for those.
-- **Canvas content is invisible to UIA.** A game board drawn on a canvas is one opaque
-  rectangle; there are no controls to click. Screenshot it, or expose state as text.
-- **No global input injection.** This plugin does not move the system cursor or send
-  global keystrokes. It targets specific windows via UIA and window messages by design.
-- **Minimized windows** have no usable geometry; restore them first.
-- Requires **Windows PowerShell 5.1** (present on every Windows 10/11). Override with
-  `DSH_WIN_CU_POWERSHELL` if needed.
-
-## Safety
-
-- No tool deletes files, kills processes, shuts down, or sends input outside the
-  selected window.
-- `win_act` accepts `expectName`; when supplied, the element name must match exactly
-  or the action is refused — use it for anything destructive or irreversible.
-- Read-only actions (`win_list_windows`, `win_inspect`, `win_status`) never modify a window.
-- Treat screenshots as sensitive: they can contain whatever is on screen.
+| Write CJK text | Chinese written into Notepad via `WM_SETTEXT`, UTF-8 intact |
+| Screenshot occluded window | Notepad fully covered, captured correctly via `PrintWindow` |
 
 ## Install
 
 ```powershell
-dsh plugin --profile <profile> add file:C:\path\to\dsh-computer-use-win
+# Windows
+dsh plugin --profile <profile> add file:C:\path\to\dsh-computer-use
 ```
 
-Then restart DSH so the bundle and its tools load.
+```bash
+# macOS / Linux — same command shape
+dsh plugin --profile <profile> add file:/path/to/dsh-computer-use
+```
+
+Then restart DSH so the bundle and tools load.
+
+### Prerequisites
+
+| Platform | Needs |
+| --- | --- |
+| Windows | Windows PowerShell 5.1 (present on every Windows 10/11). Override with `DSH_WIN_CU_POWERSHELL` |
+| macOS | Accessibility permission for the app running DSH (System Settings → Privacy & Security → Accessibility) |
+| Linux | `wmctrl`, `xdotool`, and a screenshot tool (`grim` on Wayland, else ImageMagick or `gnome-screenshot`) |
+
+## Safety
+
+- No tool deletes files, kills processes, shuts down, or sends input outside the selected window.
+- `computer_act` accepts `expectName`; when supplied it must match exactly — use it for anything irreversible.
+- Read-only actions (`computer_status`, `computer_list_windows`, `computer_inspect`) never modify a window.
+- Screenshots can contain anything on screen; treat them as sensitive.
 
 ## Testing
 
 ```powershell
-# syntax
-node --check lib/run.mjs
 node --check lib/index.mjs
-
-# tool smoke test (read-only actions only: status / list / inspect)
-node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-tools.mjs
+node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-platform.mjs
+node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mjs   # touches the real desktop
 ```
 
 ## License
@@ -102,5 +112,4 @@ MIT.
 
 ---
 
-> Status: `0.1.0`, early. Windows UI Automation is quirky across apps; expect rough
-> edges and report what breaks.
+> Status: `0.2.0`. Windows verified; macOS/Linux best-effort and untested on real hardware.
