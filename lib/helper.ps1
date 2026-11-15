@@ -63,11 +63,15 @@ public class W32cu {
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] public static extern bool GetScrollInfo(IntPtr h, int bar, ref SCROLLINFO si);
+  [StructLayout(LayoutKind.Sequential)] public struct SCROLLINFO { public uint cbSize; public uint fMask; public int nMin; public int nMax; public uint nPage; public int nPos; public int nTrackPos; }
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder s, int n);
 }
 "@
 
 
+$WM_VSCROLL = 0x0115
+$WM_HSCROLL = 0x0114
 $WM_SETTEXT = 0x000C
 $WM_GETTEXT = 0x000D
 $WM_GETTEXTLENGTH = 0x000E
@@ -289,6 +293,73 @@ function Invoke-Action {
         elements = $elems
       }
       return $res
+    }
+
+    'scrollpage' {
+      $t = Get-TargetWindow
+      if (-not $t) { throw 'target window not found' }
+
+      # Window messages scroll a control WITHOUT going through the system input
+      # queue, so they keep working when simulated keyboard/mouse input is being
+      # blocked by security software (observed with a bundled AV product).
+      $target = [IntPtr]$t.hwnd
+      if ($Index -ge 0) {
+        $e = Get-ElementAt $t $Index
+        $eh = [IntPtr]$e.Current.NativeWindowHandle
+        if ($eh -ne [IntPtr]::Zero) { $target = $eh }
+      } else {
+        # The scrollbar usually lives on a CHILD control (e.g. Notepad's Edit),
+        # not on the top-level window, so probe children for a real scroll range.
+        $cond = [System.Windows.Automation.Condition]::TrueCondition
+        $kids = $t.element.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+        foreach ($k in $kids) {
+          $kh = [IntPtr]$k.Current.NativeWindowHandle
+          if ($kh -eq [IntPtr]::Zero) { continue }
+          $probe = New-Object W32cu+SCROLLINFO
+          $probe.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($probe)
+          $probe.fMask = 0x17
+          try {
+            if ([W32cu]::GetScrollInfo($kh, 1, [ref]$probe)) {
+              if ($probe.nMax -gt 0) { $target = $kh; break }
+            }
+          } catch {}
+        }
+      }
+
+      $horizontal = $InputAction -eq 'left' -or $InputAction -eq 'right'
+      $bar = $(if ($horizontal) { 0 } else { 1 })   # SB_HORZ / SB_VERT
+      $msg = $(if ($horizontal) { $WM_HSCROLL } else { $WM_VSCROLL })
+
+      $info = New-Object W32cu+SCROLLINFO
+      $info.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($info)
+      $info.fMask = 0x17   # SIF_ALL
+      $before = -1
+      try { if ([W32cu]::GetScrollInfo($target, $bar, [ref]$info)) { $before = $info.nPos } } catch {}
+
+      $code = $(if ($InputAction -eq 'up' -or $InputAction -eq 'left') { 2 } else { 3 })  # SB_PAGEUP / SB_PAGEDOWN
+      $times = $(if ($Amount -gt 0) { $Amount } else { 1 })
+      for ($i = 0; $i -lt $times; $i++) {
+        [void][W32cu]::SendMessageInt($target, $msg, [IntPtr]$code, [IntPtr]::Zero)
+        Start-Sleep -Milliseconds 60
+      }
+
+      $info2 = New-Object W32cu+SCROLLINFO
+      $info2.cbSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($info2)
+      $info2.fMask = 0x17
+      $after = -1
+      try { if ([W32cu]::GetScrollInfo($target, $bar, [ref]$info2)) { $after = $info2.nPos } } catch {}
+
+      return @{
+        ok = $true
+        method = 'wm-scroll-message'
+        hwnd = $target.ToInt64()
+        direction = $InputAction
+        before = $before
+        after = $after
+        changed = ($before -ne $after) -and $before -ge 0 -and $after -ge 0
+        scrollable = $(if ($before -ge 0) { $true } else { $false })
+        state = $(if (($before -ne $after) -and $before -ge 0) { 'scrolled' } else { 'unchanged' })
+      }
     }
 
     'scrollto' {
