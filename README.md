@@ -44,16 +44,34 @@ input — and returns an explicit "unsupported" for element inspection.
 | `computer_status` | Report platform, readiness and which capabilities are available |
 | `computer_list_windows` | List visible top-level windows (pid, title, size, plus class/foreground on Windows) |
 | `computer_inspect` | Read the element tree (type, name, bounds, can-invoke, can-set-value), optional screenshot |
-| `computer_act` | `invoke` click · `set-text` write · `click` coordinate fallback |
+| `computer_act` | `invoke` click · `set-text` write · `click` coordinate fallback · `drag` (Windows) |
 | `computer_screenshot` | Capture window or screen to PNG; pair with `read_image` to actually see it |
 
 ## How each platform works
 
 | Platform | Mechanism |
 | --- | --- |
-| Windows | `UIAutomationClient` (.NET Framework) through **Windows PowerShell 5.1**; `InvokePattern` for clicks; `WM_SETTEXT` fallback for legacy controls; `PrintWindow(PW_RENDERFULLCONTENT)` for occluded capture |
+| Windows | `UIAutomationClient` (.NET Framework) through **Windows PowerShell 5.1**, kept alive as a **persistent `serve` process**; `InvokePattern` for clicks; `WM_SETTEXT` fallback for legacy controls; `PrintWindow(PW_RENDERFULLCONTENT)` for occluded capture; `WM_LBUTTONDOWN/MOUSEMOVE/UP` for drag |
 | macOS | `osascript` → System Events (`click button`, `keystroke`, `click at`); `screencapture` |
 | Linux | `wmctrl` for windows, `xdotool` for input, `grim` / ImageMagick / `gnome-screenshot` for capture; no element tree |
+
+### Why the helper stays resident
+
+Spawning Windows PowerShell costs about **1 second** (process start + .NET assembly
+load). Measured on this machine with 5 consecutive window lists:
+
+| Mode | Per call |
+| --- | --- |
+| One-shot spawn | 999 ms |
+| Persistent `serve` process | **27 ms** |
+
+That is a **37×** difference, so the Windows provider keeps one helper alive and
+exchanges one JSON line per request. Requests are serialised (PowerShell is
+single-threaded), a stuck helper is killed on timeout, and any failure falls back
+to a one-shot spawn.
+
+`computer_inspect` with `screenshot: true` now captures **in the same round trip**
+as the tree read, instead of two separate calls.
 
 Every Windows call re-enumerates the live tree, so an index is never replayed
 against a window that changed. `expectName` adds a hard guard: the element name
@@ -65,9 +83,20 @@ must match exactly or the action is refused.
 | --- | --- |
 | Enumerate windows | 12 visible top-level windows |
 | Read DSH's own Electron UI | **502–783 UIA elements** depending on view state |
+| Persistent helper speed | 27 ms/call vs 999 ms one-shot (**37×**) |
+| Combined tree + screenshot | 3526 elements and a PNG in one round trip |
 | Click a control | `InvokePattern` toggled the sidebar and toggled it back |
 | Write CJK text | Chinese written into Notepad via `WM_SETTEXT`, UTF-8 intact |
 | Screenshot occluded window | Notepad fully covered, captured correctly via `PrintWindow` |
+| Drag | Message-based drag reports success, but see the limitation below |
+
+## Known limitations
+
+- **Canvas content is invisible to UIA.** A board drawn on a canvas is one opaque rectangle — there are no controls to click. Screenshot it, or have the app expose state as text.
+- **Chromium/Electron apps** expose web content to UIA only when accessibility is enabled. DSH itself does (783 elements measured); for apps that don't, use `computer_screenshot` + `read_image`.
+- **Drag is message-based and not universally effective.** It sends `WM_LBUTTONDOWN` / `WM_MOUSEMOVE` / `WM_LBUTTONUP` to the target window, so no focus is stolen — but controls that rely on real mouse capture (Notepad's edit area, many canvas widgets) report success without actually selecting anything. Verified: dragging across text in Notepad produced no selection. Prefer `set-text` / `invoke`; treat drag as best-effort.
+- **Minimized windows** have no usable geometry; restore them first.
+- **No global input injection.** This plugin never moves the system cursor or sends global keystrokes; everything is targeted at a specific window.
 
 ## Install
 
