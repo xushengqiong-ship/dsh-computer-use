@@ -25,6 +25,9 @@ param(
   [int]$Max = 120,
   [string]$Out = '',
   [string]$Hwnd = '',
+  [string]$InputAction = '',
+  [string]$Key = '',
+  [int]$Amount = 0,
   [switch]$WithShot
 )
 
@@ -57,6 +60,83 @@ public class W32cu {
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder s, int n);
+}
+"@
+
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class W32in {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct MOUSEINPUT {
+    public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct KEYBDINPUT {
+    public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo;
+  }
+  [StructLayout(LayoutKind.Explicit, Size = 40)]
+  public struct INPUT {
+    [FieldOffset(0)] public uint type;
+    [FieldOffset(8)] public MOUSEINPUT mi;
+    [FieldOffset(8)] public KEYBDINPUT ki;
+  }
+  [DllImport("user32.dll", SetLastError = true)]
+  public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, UIntPtr dwExtraInfo);
+
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+
+  public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+  public const uint MOUSEEVENTF_LEFTUP = 0x0004;
+  public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+  public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+  public const uint MOUSEEVENTF_WHEEL = 0x0800;
+  public const uint KEYEVENTF_KEYUP = 0x0002;
+  public const uint KEYEVENTF_UNICODE = 0x0004;
+
+  // Real pointer/keyboard injection. Unlike WM_* messages this is honoured by
+  // every application, including canvas-only and game UIs -- but it moves the
+  // system cursor and needs the target to be foreground for typing.
+  public static void MouseButton(uint flags) {
+    INPUT[] a = new INPUT[1];
+    a[0].type = 0; // INPUT_MOUSE
+    a[0].mi.dwFlags = flags;
+    SendInput(1, a, Marshal.SizeOf(typeof(INPUT)));
+  }
+  public static void Wheel(int delta) {
+    INPUT[] a = new INPUT[1];
+    a[0].type = 0;
+    a[0].mi.dwFlags = MOUSEEVENTF_WHEEL;
+    a[0].mi.mouseData = unchecked((uint)delta);
+    SendInput(1, a, Marshal.SizeOf(typeof(INPUT)));
+  }
+  public static void KeyDown(ushort vk) {
+    INPUT[] a = new INPUT[1];
+    a[0].type = 1; // INPUT_KEYBOARD
+    a[0].ki.wVk = vk;
+    SendInput(1, a, Marshal.SizeOf(typeof(INPUT)));
+  }
+  public static void KeyUp(ushort vk) {
+    INPUT[] a = new INPUT[1];
+    a[0].type = 1;
+    a[0].ki.wVk = vk;
+    a[0].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(1, a, Marshal.SizeOf(typeof(INPUT)));
+  }
+  public static void TypeChar(char c) {
+    INPUT[] a = new INPUT[2];
+    a[0].type = 1;
+    a[0].ki.wScan = c;
+    a[0].ki.dwFlags = KEYEVENTF_UNICODE;
+    a[1].type = 1;
+    a[1].ki.wScan = c;
+    a[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+    SendInput(2, a, Marshal.SizeOf(typeof(INPUT)));
+  }
 }
 "@
 
@@ -172,6 +252,85 @@ function Get-TargetWindow {
     throw "ambiguous target: $($matches.Count) windows matched. Pass hwnd explicitly: $desc"
   }
   return $matches[0]
+}
+
+# Virtual-key lookup for the foreground input channel ("ctrl+s", "enter", "f5").
+function Get-Vk($name) {
+  $n = [string]$name
+  if ([string]::IsNullOrWhiteSpace($n)) { throw 'empty key name' }
+  $n = $n.Trim().ToLower()
+  $map = @{
+    'enter' = 0x0D; 'return' = 0x0D; 'tab' = 0x09; 'esc' = 0x1B; 'escape' = 0x1B
+    'space' = 0x20; 'backspace' = 0x08; 'delete' = 0x2E; 'del' = 0x2E; 'insert' = 0x2D
+    'home' = 0x24; 'end' = 0x23; 'pageup' = 0x21; 'pagedown' = 0x22
+    'up' = 0x26; 'down' = 0x28; 'left' = 0x25; 'right' = 0x27
+    'ctrl' = 0x11; 'control' = 0x11; 'shift' = 0x10; 'alt' = 0x12; 'win' = 0x5B
+    'f1' = 0x70; 'f2' = 0x71; 'f3' = 0x72; 'f4' = 0x73; 'f5' = 0x74; 'f6' = 0x75
+    'f7' = 0x76; 'f8' = 0x77; 'f9' = 0x78; 'f10' = 0x79; 'f11' = 0x7A; 'f12' = 0x7B
+  }
+  if ($map.ContainsKey($n)) { return [int]$map[$n] }
+  if ($n.Length -eq 1) {
+    $c = [char]::ToUpperInvariant($n[0])
+    if (($c -ge 'A' -and $c -le 'Z') -or ($c -ge '0' -and $c -le '9')) { return [int]$c }
+  }
+  throw "unknown key: $name"
+}
+
+function Invoke-Input {
+  $act = [string]$InputAction
+  switch ($act) {
+    'move' {
+      if (-not [W32in]::SetCursorPos($X, $Y)) { throw 'SetCursorPos failed' }
+      return @{ ok = $true; method = 'sendinput'; action = 'move'; x = $X; y = $Y; state = 'moved' }
+    }
+    'click' {
+      [void][W32in]::SetCursorPos($X, $Y)
+      Start-Sleep -Milliseconds 30
+      [W32in]::MouseButton([W32in]::MOUSEEVENTF_LEFTDOWN)
+      Start-Sleep -Milliseconds 30
+      [W32in]::MouseButton([W32in]::MOUSEEVENTF_LEFTUP)
+      return @{ ok = $true; method = 'sendinput'; action = 'click'; x = $X; y = $Y; state = 'sent-unverified' }
+    }
+    'drag' {
+      [void][W32in]::SetCursorPos($X, $Y)
+      Start-Sleep -Milliseconds 60
+      [W32in]::MouseButton([W32in]::MOUSEEVENTF_LEFTDOWN)
+      Start-Sleep -Milliseconds 60
+      $steps = 16
+      for ($i = 1; $i -le $steps; $i++) {
+        $cx = [int]($X + ($X2 - $X) * $i / $steps)
+        $cy = [int]($Y + ($Y2 - $Y) * $i / $steps)
+        [void][W32in]::SetCursorPos($cx, $cy)
+        Start-Sleep -Milliseconds 15
+      }
+      [W32in]::MouseButton([W32in]::MOUSEEVENTF_LEFTUP)
+      return @{ ok = $true; method = 'sendinput'; action = 'drag'; from = @{ x = $X; y = $Y }; to = @{ x = $X2; y = $Y2 }; state = 'sent-unverified' }
+    }
+    'scroll' {
+      [void][W32in]::SetCursorPos($X, $Y)
+      $delta = $(if ($Amount -ne 0) { $Amount } else { -120 })
+      [W32in]::Wheel($delta)
+      return @{ ok = $true; method = 'sendinput'; action = 'scroll'; x = $X; y = $Y; amount = $delta; state = 'sent-unverified' }
+    }
+    'press' {
+      # "ctrl+s" -> down ctrl, down s, up s, up ctrl
+      $parts = @($Key -split '\+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+      if ($parts.Count -eq 0) { throw 'press needs key (e.g. "enter" or "ctrl+s")' }
+      $vks = @($parts | ForEach-Object { Get-Vk $_ })
+      foreach ($vk in $vks) { [W32in]::KeyDown([uint16]$vk); Start-Sleep -Milliseconds 20 }
+      for ($i = $vks.Count - 1; $i -ge 0; $i--) { [W32in]::KeyUp([uint16]$vks[$i]); Start-Sleep -Milliseconds 20 }
+      return @{ ok = $true; method = 'sendinput'; action = 'press'; keys = $parts; state = 'sent-unverified' }
+    }
+    'type' {
+      if ($Text -eq '') { return @{ ok = $true; method = 'sendinput'; action = 'type'; chars = 0; state = 'noop' } }
+      foreach ($ch in $Text.ToCharArray()) {
+        [W32in]::TypeChar($ch)
+        Start-Sleep -Milliseconds 8
+      }
+      return @{ ok = $true; method = 'sendinput'; action = 'type'; chars = $Text.Length; state = 'sent-unverified' }
+    }
+    default { throw "unknown input action: $act (move/click/drag/scroll/press/type)" }
+  }
 }
 
 # Offset from the window's top-left (what screenshots are relative to) to the
@@ -416,6 +575,10 @@ function Invoke-Action {
       }
     }
 
+    'input' {
+      return (Invoke-Input)
+    }
+
     'screenshot' {
       if ($Out -eq '') { throw 'need -Out path' }
       $t = Get-TargetWindow
@@ -460,6 +623,9 @@ if ($Action -eq 'serve') {
       $script:Max = 120
       $script:Out = ''
       $script:Hwnd = ''
+      $script:InputAction = ''
+      $script:Key = ''
+      $script:Amount = 0
       $script:WithShot = $false
 
       if ($null -ne $req.pid) { $script:TargetPid = [int]$req.pid }
@@ -471,6 +637,9 @@ if ($Action -eq 'serve') {
       if ($null -ne $req.y2) { $script:Y2 = [int]$req.y2 }
       if ($null -ne $req.out) { $script:Out = [string]$req.out }
       if ($null -ne $req.hwnd) { $script:Hwnd = [string]$req.hwnd }
+      if ($null -ne $req.inputAction) { $script:InputAction = [string]$req.inputAction }
+      if ($null -ne $req.key) { $script:Key = [string]$req.key }
+      if ($null -ne $req.amount) { $script:Amount = [int]$req.amount }
       if ($req.withShot) { $script:WithShot = $true }
       if ($req.titleB64) { $script:Title = Decode ([string]$req.titleB64) }
       if ($req.expectNameB64) { $script:ExpectName = Decode ([string]$req.expectNameB64) }
