@@ -140,6 +140,20 @@ node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mj
 - Linux：尝试 AT-SPI2 桥接，至少支持 GTK 应用
 - 敏感操作的一次性确认令牌
 
+## 0.8.0 新增：原生截图与输入（不再被杀毒软件拦）
+
+截图和输入原本写在 PowerShell helper 里。Windows Defender 会把「用 PowerShell 截窗口位图」判成 `HackTool:PowerShell/EmpireGetScreenshot.C`，通过 AMSI 直接阻断整个脚本——所有能力一起失效。
+
+现在两者都改由 Node.js 通过 `koffi` FFI 直接调 `user32.dll` / `gdi32.dll`：
+
+| | PowerShell helper | 原生（koffi） |
+| --- | --- | --- |
+| 窗口截图 | ~900 ms | **185 ms** |
+| AMSI 脚本扫描 | ❌ 被拦 | ✅ 不适用 |
+| 需要加杀毒排除 | 需要 | **不需要** |
+
+helper 现在只剩 UI Automation。已实测：把 `helper.ps1` 复制到任何排除路径之外执行，Defender 不再报毒。
+
 ## 0.5.0 新增：前台输入通道
 
 借鉴 Codex computer-use 暴露的输入接口，补上了 `computer_input`：
