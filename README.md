@@ -19,15 +19,24 @@ does, not an aspiration:
 | Platform | List windows | Element tree | Click element | Write text | Screenshot |
 | --- | --- | --- | --- | --- | --- |
 | **Windows 10 / 11** (Home / Pro / Enterprise / Education) | ✅ | ✅ full UIA | ✅ no focus steal | ✅ no focus steal | ✅ occluded-safe |
-| **macOS 14+** | ✅ | ⚠️ one level below each window | ✅ System Events | ✅ keystroke | ⚠️ full screen only |
-| **Linux · X11** | ✅ wmctrl | ❌ not implemented | ⚠️ coordinates only | ✅ xdotool (needs focus) | ✅ |
-| **Linux · Wayland** | ✅ wmctrl | ❌ | ❌ xdotool can't reach native windows | ❌ | ✅ grim |
+| **macOS 14+** | ✅ | ⚠️ one level below each window | ❌ **read-only** | ❌ | ⚠️ full screen only |
+| **Linux (X11 / Wayland)** | ✅ wmctrl | ❌ | ❌ **read-only** | ❌ | ✅ screen |
 
 Legend: ✅ works · ⚠️ partial / caveated · ❌ unsupported
 
 **Windows is the only platform verified on a real machine.** macOS and Linux
 providers are written against their documented APIs but could not be tested
 here; treat them as best-effort and report what breaks.
+
+### Why macOS and Linux are read-only (0.4.0)
+
+`osascript`'s `keystroke` / `click at` and `xdotool`'s synthetic input are
+**global or unreliable**: they act on whatever window currently has focus, or are
+silently ignored by GTK/Qt/Wayland targets. Exposing them as `computer_act`
+meant "type this into the app I named" could instead type into a different
+application — and succeed without any error. Since that cannot be made safe
+without a native per-window backend, those platforms now support observation
+only and every mutation returns `unsupported` with an explanation.
 
 ### Why Linux is weaker
 
@@ -135,10 +144,33 @@ node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-platfor
 node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mjs   # touches the real desktop
 ```
 
+## Fixed in 0.4.0
+
+| ID | Problem | Fix |
+| --- | --- | --- |
+| A01 | A failed persistent call replayed mutating actions | Mutating actions now return `state: 'unknown'` and are never retried |
+| A02 | Fallback path read wire fields (`req.title`) that only exist as `titleB64` | One business request, two encoders; fallback reads the original options |
+| A03 | Late events from a dead helper could settle a newer request | Every request is bound to its process instance |
+| A05 | `click` fell through to `unknown action` | Explicit `click → clickxy` mapping |
+| A08 | Write fell back to the top-level window handle (retitled windows) | Refuses unless the element has its own HWND |
+| A09 | `set-text` reported the request text as if verified | Reads back and returns `state: verified / applied-unverified` |
+| A10 | Missing target silently captured the whole screen | Fails instead; screenshots report `scope: window / screen` |
+| A11 | Clicks used client coordinates while screenshots use window coordinates | Offset computed via `ClientToScreen`, returned as `offset` |
+| A12/A13 | macOS/Linux input was global, not target-bound | Both providers are read-only; mutations return `unsupported` |
+| A14 | Capability reporting was vague | `computer_status` lists concrete capabilities per provider |
+
+## Still open
+
+- Observation IDs (A07): UIA `RuntimeId` is empty for many controls (verified on
+  Notepad's edit area), so identity must be AutomationId + ControlType + name +
+  tree path — designed but not implemented.
+- Bounded UIA traversal (B01) and richer model-visible output (B02).
+- `type-text` on Windows (real keyboard input) is deliberately absent.
+
 ## License
 
 MIT.
 
 ---
 
-> Status: `0.2.0`. Windows verified; macOS/Linux best-effort and untested on real hardware.
+> Status: `0.4.0`. Windows verified; macOS/Linux read-only and untested on real hardware.
