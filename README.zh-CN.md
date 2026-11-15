@@ -35,8 +35,22 @@ Linux 没有能对标 UIA / AX 的跨工具包无障碍 API。AT-SPI2 存在，�
 | `computer_status` | 报告平台、就绪状态、具备哪些能力 |
 | `computer_list_windows` | 列出可见顶层窗口（pid、标题、尺寸；Windows 上还有类名、前台/最小化） |
 | `computer_inspect` | 读元素树（类型、名称、坐标、可点击、可写入），可同时截图 |
-| `computer_act` | `invoke` 点击 · `set-text` 写入 · `click` 坐标兜底 · `drag` 拖拽（Windows） |
+| `computer_act` | **后台通道**：`invoke` · `set-text` · `click` · `drag` —— 定向到窗口，不动光标 |
+| `computer_input` | **前台通道**：`move` · `click` · `drag` · `scroll` · `press` · `type` —— 真实 SendInput 事件 |
 | `computer_screenshot` | 截窗口或整屏为 PNG；配合 `read_image` 就能真的看见 |
+
+### 两条输入通道，两种取舍
+
+| | `computer_act`（后台） | `computer_input`（前台） |
+| --- | --- | --- |
+| 机制 | UIA 语义操作 + 窗口消息 | `SendInput` —— 真实指针/键盘事件 |
+| 移动你的光标 | ❌ 不会 | ✅ **会** |
+| 需要目标在前台 | ❌ 不需要 | ✅ 键盘/打字需要 |
+| 能操作 canvas / 游戏 | ❌ 不能 | ✅ **能** |
+| 你还能同时用电脑 | ✅ 可以 | ❌ 输入被接管 |
+
+你在干别的事、要我在某个窗口里后台干活 → 用后台通道。
+目标只认真实鼠标键盘（canvas、游戏、特殊控件）→ 用前台通道，代价是光标被我接管。
 
 ## 各平台怎么实现的
 
@@ -126,6 +140,16 @@ node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mj
 - Linux：尝试 AT-SPI2 桥接，至少支持 GTK 应用
 - 敏感操作的一次性确认令牌
 
+## 0.5.0 新增：前台输入通道
+
+借鉴 Codex computer-use 暴露的输入接口，补上了 `computer_input`：
+
+- `move` / `click` / `drag` / `scroll` / `press`（支持 `ctrl+s` 这种组合键）/ `type`（支持中文）
+- 走真实 `SendInput`，所以**能操作 canvas、游戏、任何界面**
+- 代价：会移动系统光标；键盘输入需要目标窗口在前台
+
+实测（Windows 10）：光标移动 ✅（962,533 → 400,300，测试后已复原）、打字 ✅（记事本写入 `SendInput typing works 123`）。
+
 ## 0.4.0 修了什么
 
 | 编号 | 问题 | 修法 |
@@ -153,4 +177,4 @@ MIT。
 
 ---
 
-> 状态：`0.4.0`。Windows 已验证；macOS / Linux 只读，未在真机测试。
+> 状态：`0.5.0`。Windows 已验证（含前台输入）；macOS / Linux 只读，未在真机测试。
