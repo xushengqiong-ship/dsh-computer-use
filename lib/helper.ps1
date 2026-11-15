@@ -59,6 +59,11 @@ public class W32cu {
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, StringBuilder s, int n);
 }
 "@
@@ -358,6 +363,16 @@ function Invoke-Input {
       [W32in]::MouseButton([W32in]::MOUSEEVENTF_MIDDLEUP)
       return @{ ok = $true; method = 'sendinput'; action = 'middle-click'; x = $X; y = $Y; state = 'sent-unverified' }
     }
+    'hover' {
+      # Park the cursor on the point and nudge it by 1px so hover handlers fire
+      # even when the pointer was already there.
+      [void][W32in]::SetCursorPos($X, $Y)
+      Start-Sleep -Milliseconds 60
+      [void][W32in]::SetCursorPos($X + 1, $Y)
+      Start-Sleep -Milliseconds 40
+      [void][W32in]::SetCursorPos($X, $Y)
+      return @{ ok = $true; method = 'sendinput'; action = 'hover'; x = $X; y = $Y; state = 'sent-unverified' }
+    }
     'drag' {
       [void][W32in]::SetCursorPos($X, $Y)
       Start-Sleep -Milliseconds 60
@@ -514,6 +529,30 @@ function Invoke-Action {
       return $res
     }
 
+    'scrollto' {
+      $t = Get-TargetWindow
+      if (-not $t) { throw 'target window not found' }
+      $e = Get-ElementAt $t $Index
+      $sp = $null
+      try {
+        $sp = [System.Windows.Automation.ScrollItemPattern]$e.GetCurrentPattern([System.Windows.Automation.ScrollItemPattern]::Pattern)
+      } catch { $sp = $null }
+      if ($null -eq $sp) {
+        throw 'element does not support ScrollItemPattern; scroll its container with computer_input scroll instead'
+      }
+      $sp.ScrollIntoView()
+      Start-Sleep -Milliseconds 220
+      $r = $e.Current.BoundingRectangle
+      return @{
+        ok = $true
+        method = 'uia-scrollitem'
+        state = 'scrolled'
+        index = $Index
+        name = $e.Current.Name
+        rect = @{ x = (SafeInt $r.X); y = (SafeInt $r.Y); w = (SafeInt $r.Width); h = (SafeInt $r.Height) }
+      }
+    }
+
     'settext' {
       $t = Get-TargetWindow
       if (-not $t) { throw 'target window not found' }
@@ -654,6 +693,42 @@ function Invoke-Action {
         steps = $steps
         window = $t.name
         note = 'message-based drag needs no focus, but controls relying on real mouse capture may ignore it'
+      }
+    }
+
+    'activate' {
+      $t = Get-TargetWindow
+      if (-not $t) { throw 'target window not found' }
+      $hwnd = [IntPtr]$t.hwnd
+
+      if ($t.minimized) { [void][W32cu]::ShowWindow($hwnd, 9) }  # SW_RESTORE
+      [void][W32cu]::BringWindowToTop($hwnd)
+      $ok = [W32cu]::SetForegroundWindow($hwnd)
+
+      # Windows only honours SetForegroundWindow from the foreground process.
+      # Attaching to the current foreground thread lifts that restriction.
+      if (-not $ok) {
+        $fg = [W32cu]::GetForegroundWindow()
+        $fgPid = [uint32]0
+        $fgTid = [W32cu]::GetWindowThreadProcessId($fg, [ref]$fgPid)
+        $myTid = [W32cu]::GetCurrentThreadId()
+        if ($fgTid -ne 0 -and $fgTid -ne $myTid) {
+          [void][W32cu]::AttachThreadInput($myTid, $fgTid, $true)
+          $ok = [W32cu]::SetForegroundWindow($hwnd)
+          [void][W32cu]::AttachThreadInput($myTid, $fgTid, $false)
+        }
+      }
+
+      Start-Sleep -Milliseconds 120
+      $now = [W32cu]::GetForegroundWindow()
+      return @{
+        ok = $true
+        method = 'setforegroundwindow'
+        state = $(if ($now -eq $hwnd) { 'foreground' } else { 'not-foreground' })
+        activated = ($now -eq $hwnd)
+        window = $t.name
+        hwnd = $t.hwnd
+        note = $(if ($now -eq $hwnd) { '' } else { 'the window is not foreground; Windows may be blocking focus changes, and keyboard input would go elsewhere' })
       }
     }
 
