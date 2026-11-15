@@ -140,6 +140,17 @@ node --no-warnings --experimental-loader ./smoke/loader.mjs ./smoke/test-live.mj
 - Linux：尝试 AT-SPI2 桥接，至少支持 GTK 应用
 - 敏感操作的一次性确认令牌
 
+## 滚动：哪种方式在哪些应用上有效
+
+联想预装的杀毒组件（Lenovo Windows Security Center / 火绒）会拦截**模拟垂直滚轮**，但窗口消息和键盘注入仍然可用。所以 `computer_scan` 用分级降级，而不是单一机制：
+
+| 目标 | 纵向 | 横向 |
+| --- | --- | --- |
+| Win32（记事本 / 资源管理器 / Office） | `WM_VSCROLL` 消息 ✅ | `WM_HSCROLL` |
+| Chromium / Electron（Codex / Chrome） | 点击聚焦 + `PageUp`/`PageDown` ✅ | **Shift + 滚轮 ✅** |
+
+在 20 列宽表上实测：Shift+滚轮把视图从 `COL-01` 滚到了 `COL-11`。同一个 Chromium 视图里普通滚轮完全无效——所以不是"注入全死"，而是"Chromium 忽略合成的垂直滚轮滚动"。
+
 ## 0.8.0 新增：原生截图与输入（不再被杀毒软件拦）
 
 截图和输入原本写在 PowerShell helper 里。Windows Defender 会把「用 PowerShell 截窗口位图」判成 `HackTool:PowerShell/EmpireGetScreenshot.C`，通过 AMSI 直接阻断整个脚本——所有能力一起失效。
